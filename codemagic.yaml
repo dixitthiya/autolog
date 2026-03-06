@@ -1,0 +1,90 @@
+workflows:
+  ios-build-and-test:
+    name: iOS Build & Test
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      xcode: 15.4
+      cocoapods: default
+      groups:
+        - neon_credentials
+    scripts:
+      - name: Generate Config.swift from env variable
+        script: |
+          cat > AutoLog/App/Config.swift <<EOF
+          import Foundation
+
+          struct Config {
+              static let neonConnectionString = "$NEON_CONNECTION_STRING"
+
+              static var neonBaseURL: String {
+                  guard let url = URLComponents(string: neonConnectionString.replacingOccurrences(of: "postgresql://", with: "https://")) else { return "" }
+                  return "https://\(url.host ?? "")/sql"
+              }
+
+              static var neonAPIKey: String {
+                  guard let url = URLComponents(string: neonConnectionString.replacingOccurrences(of: "postgresql://", with: "https://")) else { return "" }
+                  return url.password ?? ""
+              }
+
+              static let urlSessionTimeout: TimeInterval = 8
+              static let bleReconnectInterval: TimeInterval = 30
+              static let obdCommandTimeout: TimeInterval = 5
+              static let maxRetryCount = 10
+          }
+          EOF
+
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        script: |
+          xcodegen generate
+
+      - name: Build for testing
+        script: |
+          xcodebuild build-for-testing \
+            -project AutoLog.xcodeproj \
+            -scheme AutoLog \
+            -destination "platform=iOS Simulator,name=iPhone 15,OS=17.5" \
+            -allowProvisioningUpdates \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+      - name: Run unit tests
+        script: |
+          xcodebuild test \
+            -project AutoLog.xcodeproj \
+            -scheme AutoLog \
+            -destination "platform=iOS Simulator,name=iPhone 15,OS=17.5" \
+            -resultBundlePath build/tests/TestResults.xcresult \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+      - name: Build release (no signing)
+        script: |
+          xcodebuild build \
+            -project AutoLog.xcodeproj \
+            -scheme AutoLog \
+            -destination "generic/platform=iOS Simulator" \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+    artifacts:
+      - build/tests/**
+
+    publishing:
+      email:
+        recipients:
+          - your-email@example.com
+        notify:
+          success: true
+          failure: true

@@ -1,0 +1,361 @@
+import Foundation
+
+actor NeonRepository {
+    static let shared = NeonRepository()
+
+    private let session: URLSession
+    private let dateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private init() {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = Config.urlSessionTimeout
+        config.timeoutIntervalForResource = Config.urlSessionTimeout
+        self.session = URLSession(configuration: config)
+    }
+
+    // MARK: - Raw Query
+
+    private func execute(_ sql: String, params: [Any] = []) async throws -> [[String: Any]] {
+        guard let url = URL(string: Config.neonBaseURL) else {
+            throw NeonError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(Config.neonAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let paramValues: [Any] = params.map { param in
+            if let date = param as? Date {
+                return dateFormatter.string(from: date)
+            }
+            return param
+        }
+
+        let body: [String: Any] = ["query": sql, "params": paramValues]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NeonError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "Unknown error"
+            Log.db("HTTP \(httpResponse.statusCode): \(message)")
+            throw NeonError.httpError(httpResponse.statusCode, message)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = json["rows"] as? [[Any]],
+              let fields = json["fields"] as? [[String: Any]] else {
+            return []
+        }
+
+        let columnNames = fields.compactMap { $0["name"] as? String }
+        return rows.map { row in
+            var dict: [String: Any] = [:]
+            for (i, col) in columnNames.enumerated() where i < row.count {
+                dict[col] = row[i]
+            }
+            return dict
+        }
+    }
+
+    private func executeNoResult(_ sql: String, params: [Any] = []) async throws {
+        _ = try await execute(sql, params: params)
+    }
+
+    // MARK: - Schema Init
+
+    func initializeSchema() async throws {
+        Log.db("initializing schema")
+
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS mileage_records (
+                id TEXT PRIMARY KEY,
+                timestamp TIMESTAMPTZ NOT NULL,
+                odometer_miles DOUBLE PRECISION NOT NULL,
+                source TEXT NOT NULL,
+                synced_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS service_records (
+                id TEXT PRIMARY KEY,
+                timestamp TIMESTAMPTZ NOT NULL,
+                service_type TEXT NOT NULL,
+                category TEXT NOT NULL,
+                odometer_miles DOUBLE PRECISION NOT NULL,
+                rotor_thickness_mm DOUBLE PRECISION,
+                amount DOUBLE PRECISION,
+                comments TEXT,
+                manually_edited BOOLEAN DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS service_thresholds (
+                service_type TEXT PRIMARY KEY,
+                miles_critical DOUBLE PRECISION,
+                miles_warning DOUBLE PRECISION,
+                days_critical INTEGER,
+                days_warning INTEGER,
+                rotor_critical DOUBLE PRECISION,
+                rotor_warning DOUBLE PRECISION
+            )
+        """)
+
+        Log.db("schema initialized")
+        try await seedThresholds()
+    }
+
+    private func seedThresholds() async throws {
+        let rows = try await execute("SELECT COUNT(*) as cnt FROM service_thresholds")
+        let count = (rows.first?["cnt"] as? Int) ?? (rows.first?["cnt"] as? Double).map { Int($0) } ?? 0
+        guard count == 0 else {
+            Log.db("thresholds already seeded (\(count) rows)")
+            return
+        }
+
+        Log.db("seeding thresholds")
+        let thresholds: [(String, Double?, Double?, Int?, Int?, Double?, Double?)] = [
+            ("Oil & Oil Filter Change", 7000, 5000, nil, nil, nil, nil),
+            ("Tire Rotation", 7000, 5000, nil, nil, nil, nil),
+            ("Engine Air Filter", 20000, 15000, 365, nil, nil, nil),
+            ("Cabin Air Filter", 14000, 10000, 365, nil, nil, nil),
+            ("Transmission Fluid Change", 30000, 25000, nil, nil, nil, nil),
+            ("Brake Fluid Flush", 30000, 25000, 1095, nil, nil, nil),
+            ("Brake Service", 22000, 18000, 730, nil, nil, nil),
+            ("Spark Plug Replacement", 90000, 80000, nil, nil, nil, nil),
+            ("Coolant Flush", 50000, 45000, 1825, 1460, nil, nil),
+            ("Throttle Body Cleaning", 40000, 30000, 1460, 1095, nil, nil),
+            ("Front Rotor Thickness Reading", nil, nil, nil, nil, 21.4, 21.8),
+            ("Rear Rotor Thickness Reading", nil, nil, nil, nil, 8.4, 8.6),
+        ]
+
+        for t in thresholds {
+            try await executeNoResult("""
+                INSERT INTO service_thresholds (service_type, miles_critical, miles_warning, days_critical, days_warning, rotor_critical, rotor_warning)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (service_type) DO NOTHING
+            """, params: [
+                t.0,
+                t.1 as Any,
+                t.2 as Any,
+                t.3 as Any,
+                t.4 as Any,
+                t.5 as Any,
+                t.6 as Any
+            ])
+        }
+        Log.db("thresholds seeded")
+    }
+
+    // MARK: - Mileage Records
+
+    func saveMileageRecord(_ record: MileageRecord) async throws {
+        Log.db("saving mileage record")
+        try await executeNoResult("""
+            INSERT INTO mileage_records (id, timestamp, odometer_miles, source)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (id) DO NOTHING
+        """, params: [record.id, record.timestamp, record.odometerMiles, record.source])
+        Log.db("record saved")
+    }
+
+    func getMileageRecords() async throws -> [MileageRecord] {
+        let rows = try await execute("SELECT id, timestamp, odometer_miles, source FROM mileage_records ORDER BY timestamp DESC")
+        return rows.compactMap { parseMileageRecord($0) }
+    }
+
+    func updateMileageRecord(_ record: MileageRecord) async throws {
+        try await executeNoResult("""
+            UPDATE mileage_records SET timestamp = $2, odometer_miles = $3, source = $4 WHERE id = $1
+        """, params: [record.id, record.timestamp, record.odometerMiles, record.source])
+    }
+
+    func deleteMileageRecord(id: String) async throws {
+        try await executeNoResult("DELETE FROM mileage_records WHERE id = $1", params: [id])
+    }
+
+    func getTodayMileageRecord() async throws -> MileageRecord? {
+        let rows = try await execute("""
+            SELECT id, timestamp, odometer_miles, source FROM mileage_records
+            WHERE DATE(timestamp) = CURRENT_DATE ORDER BY timestamp DESC LIMIT 1
+        """)
+        return rows.first.flatMap { parseMileageRecord($0) }
+    }
+
+    func getLatestMileageRecord() async throws -> MileageRecord? {
+        let rows = try await execute("""
+            SELECT id, timestamp, odometer_miles, source FROM mileage_records
+            ORDER BY timestamp DESC LIMIT 1
+        """)
+        return rows.first.flatMap { parseMileageRecord($0) }
+    }
+
+    // MARK: - Service Records
+
+    func saveServiceRecord(_ record: ServiceRecord) async throws {
+        try await executeNoResult("""
+            INSERT INTO service_records (id, timestamp, service_type, category, odometer_miles, rotor_thickness_mm, amount, comments, manually_edited)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (id) DO NOTHING
+        """, params: [
+            record.id, record.timestamp, record.serviceType, record.category,
+            record.odometerMiles, record.rotorThicknessMM as Any,
+            record.amount as Any, record.comments as Any, record.manuallyEdited
+        ])
+    }
+
+    func getServiceRecords() async throws -> [ServiceRecord] {
+        let rows = try await execute("""
+            SELECT id, timestamp, service_type, category, odometer_miles, rotor_thickness_mm, amount, comments, manually_edited
+            FROM service_records ORDER BY timestamp DESC
+        """)
+        return rows.compactMap { parseServiceRecord($0) }
+    }
+
+    func getLatestRecord(for serviceType: String) async throws -> ServiceRecord? {
+        let rows = try await execute("""
+            SELECT id, timestamp, service_type, category, odometer_miles, rotor_thickness_mm, amount, comments, manually_edited
+            FROM service_records WHERE service_type = $1 ORDER BY timestamp DESC LIMIT 1
+        """, params: [serviceType])
+        return rows.first.flatMap { parseServiceRecord($0) }
+    }
+
+    func updateServiceRecord(_ record: ServiceRecord) async throws {
+        try await executeNoResult("""
+            UPDATE service_records SET timestamp = $2, service_type = $3, category = $4,
+            odometer_miles = $5, rotor_thickness_mm = $6, amount = $7, comments = $8, manually_edited = $9
+            WHERE id = $1
+        """, params: [
+            record.id, record.timestamp, record.serviceType, record.category,
+            record.odometerMiles, record.rotorThicknessMM as Any,
+            record.amount as Any, record.comments as Any, record.manuallyEdited
+        ])
+    }
+
+    func deleteServiceRecord(id: String) async throws {
+        try await executeNoResult("DELETE FROM service_records WHERE id = $1", params: [id])
+    }
+
+    // MARK: - Thresholds
+
+    func getThresholds() async throws -> [ServiceThreshold] {
+        let rows = try await execute("SELECT * FROM service_thresholds")
+        return rows.compactMap { row in
+            guard let serviceType = row["service_type"] as? String else { return nil }
+            return ServiceThreshold(
+                serviceType: serviceType,
+                milesCritical: row["miles_critical"] as? Double,
+                milesWarning: row["miles_warning"] as? Double,
+                daysCritical: (row["days_critical"] as? Double).map { Int($0) } ?? row["days_critical"] as? Int,
+                daysWarning: (row["days_warning"] as? Double).map { Int($0) } ?? row["days_warning"] as? Int,
+                rotorCritical: row["rotor_critical"] as? Double,
+                rotorWarning: row["rotor_warning"] as? Double
+            )
+        }
+    }
+
+    // MARK: - Dashboard
+
+    func getDashboardData() async throws -> [DashboardRow] {
+        let thresholds = try await getThresholds()
+        let latestMileage = try await getLatestMileageRecord()
+        let currentOdometer = latestMileage?.odometerMiles ?? 0
+
+        var rows: [DashboardRow] = []
+        for threshold in thresholds {
+            let lastService = try await getLatestRecord(for: threshold.serviceType)
+            let lastMileage = lastService?.odometerMiles ?? 0
+            let milesAfter = currentOdometer - lastMileage
+            let lastDate = lastService?.timestamp
+            let daysAfter = lastDate.map { Calendar.current.dateComponents([.day], from: $0, to: Date()).day ?? 0 } ?? 0
+            let monthsAfter = Double(daysAfter) / 30.44
+
+            let status = StatusCalculator.calculate(
+                serviceType: threshold.serviceType,
+                threshold: threshold,
+                milesSinceService: milesAfter,
+                daysSinceService: daysAfter,
+                rotorThickness: lastService?.rotorThicknessMM,
+                hasServiceRecord: lastService != nil
+            )
+
+            rows.append(DashboardRow(
+                id: threshold.serviceType,
+                serviceType: threshold.serviceType,
+                milesAfterService: milesAfter,
+                status: status,
+                currentMileage: currentOdometer,
+                lastServiceMileage: lastMileage,
+                lastServiceDate: lastDate,
+                rotorThickness: lastService?.rotorThicknessMM,
+                daysAfterService: daysAfter,
+                monthsAfterService: monthsAfter
+            ))
+        }
+
+        return rows.sorted { $0.status < $1.status }
+    }
+
+    // MARK: - Parsing Helpers
+
+    private func parseMileageRecord(_ row: [String: Any]) -> MileageRecord? {
+        guard let id = row["id"] as? String,
+              let odometer = row["odometer_miles"] as? Double,
+              let source = row["source"] as? String else { return nil }
+        let timestamp = parseDate(row["timestamp"]) ?? Date()
+        return MileageRecord(id: id, timestamp: timestamp, odometerMiles: odometer, source: source)
+    }
+
+    private func parseServiceRecord(_ row: [String: Any]) -> ServiceRecord? {
+        guard let id = row["id"] as? String,
+              let serviceType = row["service_type"] as? String,
+              let category = row["category"] as? String,
+              let odometer = row["odometer_miles"] as? Double else { return nil }
+        let timestamp = parseDate(row["timestamp"]) ?? Date()
+        return ServiceRecord(
+            id: id,
+            timestamp: timestamp,
+            serviceType: serviceType,
+            category: category,
+            odometerMiles: odometer,
+            rotorThicknessMM: row["rotor_thickness_mm"] as? Double,
+            amount: row["amount"] as? Double,
+            comments: row["comments"] as? String,
+            manuallyEdited: (row["manually_edited"] as? Bool) ?? false
+        )
+    }
+
+    private func parseDate(_ value: Any?) -> Date? {
+        guard let str = value as? String else { return nil }
+        if let d = dateFormatter.date(from: str) { return d }
+        let fallback = ISO8601DateFormatter()
+        fallback.formatOptions = [.withInternetDateTime]
+        return fallback.date(from: str)
+    }
+}
+
+enum NeonError: LocalizedError {
+    case invalidURL
+    case invalidResponse
+    case httpError(Int, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL: return "Invalid Neon database URL"
+        case .invalidResponse: return "Invalid response from server"
+        case .httpError(let code, let msg): return "HTTP \(code): \(msg)"
+        }
+    }
+}
