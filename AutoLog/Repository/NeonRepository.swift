@@ -51,13 +51,32 @@ actor NeonRepository {
             throw NeonError.httpError(httpResponse.statusCode, message)
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let rows = json["rows"] as? [[Any]],
-              let fields = json["fields"] as? [[String: Any]] else {
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            Log.db("response is not a JSON object")
             return []
         }
 
-        let columnNames = fields.compactMap { $0["name"] as? String }
+        // Neon HTTP API may return rows at top level or nested under "result"
+        let resultObj = (json["result"] as? [String: Any]) ?? json
+
+        guard let rows = resultObj["rows"] as? [[Any]] else {
+            Log.db("no 'rows' array in response. Keys: \(Array(json.keys))")
+            return []
+        }
+
+        // Neon may use "fields" or "columns" for column metadata
+        let columnNames: [String]
+        if let fields = resultObj["fields"] as? [[String: Any]] {
+            columnNames = fields.compactMap { $0["name"] as? String }
+        } else if let columns = resultObj["columns"] as? [[String: Any]] {
+            columnNames = columns.compactMap { $0["name"] as? String }
+        } else if let fields = resultObj["fields"] as? [String] {
+            columnNames = fields
+        } else {
+            Log.db("no 'fields' or 'columns' in response. Keys: \(Array(resultObj.keys))")
+            return []
+        }
+
         return rows.map { row in
             var dict: [String: Any] = [:]
             for (i, col) in columnNames.enumerated() where i < row.count {
@@ -255,7 +274,15 @@ actor NeonRepository {
         result += "URL: \(Config.neonBaseURL)\n"
         result += "ConnStr: \(Config.neonConnectionString.prefix(30))...\n\n"
 
-        // Test raw query
+        // First: dump raw HTTP response to see actual format
+        do {
+            let rawBody = try await executeRaw("SELECT COUNT(*) as cnt FROM mileage_records")
+            result += "RAW RESPONSE:\n\(rawBody.prefix(500))\n\n"
+        } catch {
+            result += "RAW QUERY FAILED: \(error.localizedDescription)\n\n"
+        }
+
+        // Test parsed queries
         do {
             let mileageRows = try await execute("SELECT COUNT(*) as cnt FROM mileage_records")
             let mileageCount = parseString(mileageRows.first?["cnt"]) ?? "nil"
@@ -296,6 +323,27 @@ actor NeonRepository {
         }
 
         return result
+    }
+
+    /// Returns the raw HTTP response body as a string for debugging
+    private func executeRaw(_ sql: String) async throws -> String {
+        guard let url = URL(string: Config.neonBaseURL) else {
+            throw NeonError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(Config.neonConnectionString, forHTTPHeaderField: "Neon-Connection-String")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = ["query": sql, "params": []]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+        let httpResponse = response as? HTTPURLResponse
+        let statusCode = httpResponse?.statusCode ?? -1
+        let bodyStr = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+        return "HTTP \(statusCode): \(bodyStr)"
     }
 
     // MARK: - Thresholds

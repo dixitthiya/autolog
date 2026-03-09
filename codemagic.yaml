@@ -11,14 +11,15 @@ workflows:
     scripts:
       - name: Generate Config.swift from env variables
         script: |
-          NEON_HOST=$(echo "$NEON_CONNECTION_STRING" | sed 's|.*@\([^/]*\)/.*|\1|')
+          # Extract host and remove -pooler suffix (HTTP SQL API requires direct endpoint)
+          NEON_HOST=$(echo "$NEON_CONNECTION_STRING" | sed 's|.*@\([^/]*\)/.*|\1|' | sed 's|-pooler||')
           cat > AutoLog/App/Config.swift <<EOF
           import Foundation
 
           struct Config {
               static let neonBaseURL = "https://${NEON_HOST}/sql"
               static let neonConnectionString = "${NEON_CONNECTION_STRING}"
-              static let urlSessionTimeout: TimeInterval = 8
+              static let urlSessionTimeout: TimeInterval = 15
               static let bleReconnectInterval: TimeInterval = 30
               static let obdCommandTimeout: TimeInterval = 5
               static let maxRetryCount = 10
