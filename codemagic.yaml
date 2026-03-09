@@ -11,19 +11,21 @@ workflows:
     scripts:
       - name: Generate Config.swift from env variables
         script: |
+          NEON_HOST=$(echo "$NEON_CONNECTION_STRING" | sed 's|.*@\([^/]*\)/.*|\1|')
+          NEON_PASS=$(echo "$NEON_CONNECTION_STRING" | sed 's|.*://[^:]*:\([^@]*\)@.*|\1|')
           cat > AutoLog/App/Config.swift <<EOF
           import Foundation
 
           struct Config {
-              static let neonBaseURL = "${NEON_BASE_URL}"
-              static let neonAPIKey = "${NEON_API_KEY}"
+              static let neonBaseURL = "https://${NEON_HOST}/sql"
+              static let neonAPIKey = "${NEON_PASS}"
               static let urlSessionTimeout: TimeInterval = 8
               static let bleReconnectInterval: TimeInterval = 30
               static let obdCommandTimeout: TimeInterval = 5
               static let maxRetryCount = 10
           }
           EOF
-          echo "Config.swift generated with base URL: ${NEON_BASE_URL}"
+          echo "Config.swift generated with base URL: https://${NEON_HOST}/sql"
 
       - name: Install XcodeGen
         script: |
