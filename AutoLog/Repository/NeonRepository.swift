@@ -497,7 +497,9 @@ actor NeonRepository {
                 lastServiceDate: lastDate,
                 rotorThickness: lastService?.rotorThicknessMM,
                 daysAfterService: daysAfter,
-                monthsAfterService: monthsAfter
+                monthsAfterService: monthsAfter,
+                milesWarning: threshold.milesWarning,
+                milesCritical: threshold.milesCritical
             ))
         }
 

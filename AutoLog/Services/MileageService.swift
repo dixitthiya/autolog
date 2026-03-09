@@ -245,11 +245,17 @@ class MileageService: ObservableObject {
                         body: "\(row.serviceType): Immediate Service Required"
                     )
                 case .serviceSoon:
-                    let milesRemaining = max(0, (row.currentMileage - row.lastServiceMileage))
-                    await sendNotification(
-                        title: "Service Reminder",
-                        body: "\(row.serviceType): Due in \(Int(milesRemaining)) miles"
-                    )
+                    if let toCritical = row.milesToCritical, toCritical > 0 {
+                        await sendNotification(
+                            title: "Service Reminder",
+                            body: "\(row.serviceType): Critical in \(Int(toCritical).formatted()) miles"
+                        )
+                    } else {
+                        await sendNotification(
+                            title: "Service Reminder",
+                            body: "\(row.serviceType): Service due"
+                        )
+                    }
                 default:
                     break
                 }

@@ -258,7 +258,7 @@ struct AnalyticsView: View {
         var results: [(String, ProjectionStatus)] = []
         for threshold in thresholds {
             // Skip rotor-only thresholds (they don't have miles/days projection)
-            guard threshold.milesCritical != nil || threshold.daysCritical != nil else { continue }
+            guard threshold.milesWarning != nil || threshold.daysWarning != nil else { continue }
 
             let lastService = serviceRecords
                 .filter { $0.serviceType == threshold.serviceType }
@@ -271,24 +271,23 @@ struct AnalyticsView: View {
                 continue
             }
 
-            // Calculate miles-based projection
+            // Calculate miles-based projection (using warning threshold)
             var milesDaysUntil: Double?
-            if let milesCritical = threshold.milesCritical {
+            if let milesWarning = threshold.milesWarning {
                 let milesSince = currentMileage - lastService.odometerMiles
-                let milesRemaining = milesCritical - milesSince
+                let milesRemaining = milesWarning - milesSince
                 if velocity > 0 {
                     milesDaysUntil = milesRemaining / velocity
                 } else {
-                    // Can't project miles without velocity
                     milesDaysUntil = milesRemaining > 0 ? nil : -1
                 }
             }
 
-            // Calculate days-based projection
+            // Calculate days-based projection (using warning threshold)
             var timeDaysUntil: Double?
-            if let daysCritical = threshold.daysCritical {
+            if let daysWarning = threshold.daysWarning {
                 let daysSince = Date().timeIntervalSince(lastService.timestamp) / 86400
-                timeDaysUntil = Double(daysCritical) - daysSince
+                timeDaysUntil = Double(daysWarning) - daysSince
             }
 
             // Use whichever comes first (smallest daysUntil)

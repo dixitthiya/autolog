@@ -17,8 +17,8 @@ enum ServiceStatus: String, Codable, Comparable {
 
     var label: String {
         switch self {
-        case .critical: return "Critical - Immediate Service Required"
-        case .serviceSoon: return "Service Soon - Inspect Symptoms/Parts"
+        case .critical: return "Overdue - Service Now"
+        case .serviceSoon: return "Service Due - Good Time to Service"
         case .allGood: return "All Good"
         case .noData: return "No Data"
         }

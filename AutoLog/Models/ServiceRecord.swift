@@ -107,6 +107,18 @@ struct DashboardRow: Identifiable {
     let rotorThickness: Double?
     let daysAfterService: Int
     let monthsAfterService: Double
+    let milesWarning: Double?
+    let milesCritical: Double?
+
+    var milesRemaining: Double? {
+        guard let warning = milesWarning else { return nil }
+        return warning - milesAfterService
+    }
+
+    var milesToCritical: Double? {
+        guard let critical = milesCritical else { return nil }
+        return critical - milesAfterService
+    }
 }
 
 struct ServiceThreshold: Codable {

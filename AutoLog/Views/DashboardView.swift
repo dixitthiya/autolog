@@ -235,6 +235,31 @@ struct DashboardRowView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            if row.rotorThickness == nil, row.milesWarning != nil {
+                switch row.status {
+                case .allGood:
+                    if let remaining = row.milesRemaining, remaining > 0 {
+                        Label("\(Int(remaining).formatted()) mi remaining", systemImage: "arrow.forward.circle")
+                            .font(.caption)
+                            .foregroundStyle(row.status.color)
+                    }
+                case .serviceSoon:
+                    if let toCritical = row.milesToCritical, toCritical > 0 {
+                        Label("Critical in \(Int(toCritical).formatted()) mi", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(row.status.color)
+                    }
+                case .critical:
+                    if let toCritical = row.milesToCritical {
+                        Label("Overdue by \(Int(abs(toCritical)).formatted()) mi", systemImage: "exclamationmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(row.status.color)
+                    }
+                case .noData:
+                    EmptyView()
+                }
+            }
         }
         .padding(.vertical, 2)
     }
@@ -255,8 +280,8 @@ struct DashboardRowView: View {
 
     private var badgeLabel: String {
         switch row.status {
-        case .critical: return "CRITICAL"
-        case .serviceSoon: return "SOON"
+        case .critical: return "OVERDUE"
+        case .serviceSoon: return "DUE"
         case .allGood: return "GOOD"
         case .noData: return "N/A"
         }
