@@ -10,6 +10,7 @@ class CSVImporter: ObservableObject {
     @Published var importedCount = 0
     @Published var errorMessage: String?
     @Published var isComplete = false
+    @Published var debugInfo: String = ""
 
     private static let hasImportedKey = "csvImportComplete"
 
@@ -28,29 +29,38 @@ class CSVImporter: ObservableObject {
         errorMessage = nil
         var skippedCount = 0
 
+        debugInfo = "Reading file..."
         Log.csv("starting import from \(url.lastPathComponent)")
 
-        guard url.startAccessingSecurityScopedResource() else {
-            errorMessage = "Cannot access file"
-            isImporting = false
-            return
-        }
+        let accessing = url.startAccessingSecurityScopedResource()
+        debugInfo = "Security access: \(accessing)"
 
+        // Read file as Data first to avoid NSException from String(contentsOf:)
         let content: String
         do {
-            content = try String(contentsOf: url, encoding: .utf8)
+            let fileData = try Data(contentsOf: url)
+            guard let decoded = String(data: fileData, encoding: .utf8)
+                    ?? String(data: fileData, encoding: .ascii) else {
+                errorMessage = "Cannot decode file as text"
+                if accessing { url.stopAccessingSecurityScopedResource() }
+                isImporting = false
+                return
+            }
+            content = decoded
+            debugInfo = "File read: \(fileData.count) bytes"
         } catch {
             errorMessage = "Failed to read CSV: \(error.localizedDescription)"
             Log.csv("import failed: \(error.localizedDescription)")
-            url.stopAccessingSecurityScopedResource()
+            if accessing { url.stopAccessingSecurityScopedResource() }
             isImporting = false
             return
         }
-        url.stopAccessingSecurityScopedResource()
+        if accessing { url.stopAccessingSecurityScopedResource() }
 
         let lines = content.components(separatedBy: .newlines).filter { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            return !trimmed.isEmpty && !trimmed.allSatisfy { $0 == "," }
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            return !trimmed.allSatisfy { $0 == "," }
         }
 
         guard lines.count > 1 else {
@@ -62,6 +72,7 @@ class CSVImporter: ObservableObject {
         let header = parseCSVLine(lines[0])
         let dataLines = Array(lines.dropFirst())
         totalRows = dataLines.count
+        debugInfo = "Parsed \(totalRows) rows, columns: \(header.prefix(5).joined(separator: ", "))"
 
         let colMap = Dictionary(uniqueKeysWithValues: header.enumerated().map { ($1.trimmingCharacters(in: .whitespaces).lowercased(), $0) })
 
@@ -73,7 +84,7 @@ class CSVImporter: ObservableObject {
         let commentsIdx = colMap["comments"]
 
         guard let tsIdx = timestampIdx, let stIdx = serviceTypeIdx, let odIdx = odometerIdx else {
-            errorMessage = "Missing required columns: Timestamp, Service Type, Odometer Reading (Miles)"
+            errorMessage = "Missing required columns. Found: \(Array(colMap.keys).joined(separator: ", "))"
             isImporting = false
             return
         }
@@ -87,6 +98,8 @@ class CSVImporter: ObservableObject {
         let isoFormatter = DateFormatter()
         isoFormatter.dateFormat = "yyyy-MM-dd"
         isoFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        debugInfo = "Starting import of \(totalRows) rows..."
 
         for (i, line) in dataLines.enumerated() {
             let cols = parseCSVLine(line)
@@ -141,6 +154,7 @@ class CSVImporter: ObservableObject {
             } catch {
                 skippedCount += 1
                 Log.csv("error importing row \(i): \(error.localizedDescription)")
+                debugInfo = "Row \(i) error: \(error.localizedDescription)"
             }
 
             progress = Double(i + 1) / Double(totalRows)
@@ -152,6 +166,7 @@ class CSVImporter: ObservableObject {
         }
 
         Log.csv("import complete: \(importedCount) imported, \(skippedCount) skipped out of \(totalRows) rows")
+        debugInfo = "Done: \(importedCount) imported, \(skippedCount) skipped"
         CSVImporter.markImported()
         isComplete = true
         isImporting = false
@@ -197,6 +212,19 @@ struct CSVImportView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal)
 
+                // Debug info
+                if !importer.debugInfo.isEmpty {
+                    Text(importer.debugInfo)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal)
+                }
+
+                // DB connection status
+                Text("DB: \(Config.neonBaseURL.prefix(40))...")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
                 if importer.isImporting {
                     VStack(spacing: 12) {
                         ProgressView(value: importer.progress)
@@ -218,6 +246,7 @@ struct CSVImportView: View {
                     Text(error)
                         .foregroundStyle(.red)
                         .font(.caption)
+                        .padding(.horizontal)
                 }
 
                 Spacer()
@@ -249,17 +278,11 @@ struct CSVImportView: View {
             .navigationBarTitleDisplayMode(.inline)
             .fileImporter(
                 isPresented: $showFilePicker,
-                allowedContentTypes: [UTType.commaSeparatedText, UTType.plainText, UTType.data]
+                allowedContentTypes: [UTType.commaSeparatedText, UTType.plainText]
             ) { result in
                 switch result {
                 case .success(let url):
-                    Task { @MainActor in
-                        do {
-                            try await NeonRepository.shared.initializeSchema()
-                        } catch {
-                            importer.errorMessage = "Database not ready: \(error.localizedDescription)"
-                            return
-                        }
+                    Task {
                         await importer.importCSV(from: url)
                     }
                 case .failure(let error):
