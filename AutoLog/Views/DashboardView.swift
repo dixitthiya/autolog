@@ -237,57 +237,47 @@ struct DashboardRowView: View {
             }
 
             if row.rotorThickness == nil, (row.milesWarning != nil || row.daysWarning != nil) {
-                HStack(spacing: 12) {
-                    switch row.status {
-                    case .allGood:
-                        if let remaining = row.milesRemaining, remaining > 0 {
-                            Label("\(Int(remaining).formatted()) mi", systemImage: "arrow.forward.circle")
-                                .font(.caption)
-                                .foregroundStyle(row.status.color)
-                        }
-                        if let days = row.daysRemaining, days > 0 {
-                            Label(timeLabel(days), systemImage: "clock")
-                                .font(.caption)
-                                .foregroundStyle(row.status.color)
-                        }
-                        Text("remaining")
+                switch row.status {
+                case .allGood:
+                    let parts = remainingParts(
+                        miles: row.milesRemaining.flatMap { $0 > 0 ? "\(Int($0).formatted()) mi" : nil },
+                        days: row.daysRemaining.flatMap { $0 > 0 ? timeLabel($0) : nil }
+                    )
+                    if !parts.isEmpty {
+                        Label("\(parts) remaining", systemImage: "arrow.forward.circle")
                             .font(.caption)
                             .foregroundStyle(row.status.color)
-                    case .serviceSoon:
-                        Text("Critical in")
-                            .font(.caption)
-                            .foregroundStyle(row.status.color)
-                        if let toCritical = row.milesToCritical, toCritical > 0 {
-                            Label("\(Int(toCritical).formatted()) mi", systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundStyle(row.status.color)
-                        }
-                        if let days = row.daysToCritical, days > 0 {
-                            Label(timeLabel(days), systemImage: "clock.badge.exclamationmark")
-                                .font(.caption)
-                                .foregroundStyle(row.status.color)
-                        }
-                    case .critical:
-                        Text("Overdue by")
-                            .font(.caption)
-                            .foregroundStyle(row.status.color)
-                        if let toCritical = row.milesToCritical {
-                            Label("\(Int(abs(toCritical)).formatted()) mi", systemImage: "exclamationmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(row.status.color)
-                        }
-                        if let days = row.daysToCritical, days < 0 {
-                            Label(timeLabel(abs(days)), systemImage: "clock.badge.exclamationmark")
-                                .font(.caption)
-                                .foregroundStyle(row.status.color)
-                        }
-                    case .noData:
-                        EmptyView()
                     }
+                case .serviceSoon:
+                    let parts = remainingParts(
+                        miles: row.milesToCritical.flatMap { $0 > 0 ? "\(Int($0).formatted()) mi" : nil },
+                        days: row.daysToCritical.flatMap { $0 > 0 ? timeLabel($0) : nil }
+                    )
+                    if !parts.isEmpty {
+                        Label("Critical in \(parts)", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(row.status.color)
+                    }
+                case .critical:
+                    let parts = remainingParts(
+                        miles: row.milesToCritical.map { "\(Int(abs($0)).formatted()) mi" },
+                        days: row.daysToCritical.flatMap { $0 < 0 ? timeLabel(abs($0)) : nil }
+                    )
+                    if !parts.isEmpty {
+                        Label("Overdue by \(parts)", systemImage: "exclamationmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(row.status.color)
+                    }
+                case .noData:
+                    EmptyView()
                 }
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private func remainingParts(miles: String?, days: String?) -> String {
+        [miles, days].compactMap { $0 }.joined(separator: " / ")
     }
 
     private func timeLabel(_ days: Int) -> String {
