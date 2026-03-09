@@ -26,6 +26,7 @@ class CSVImporter: ObservableObject {
         progress = 0
         importedCount = 0
         errorMessage = nil
+        var skippedCount = 0
 
         Log.csv("starting import from \(url.lastPathComponent)")
 
@@ -34,96 +35,125 @@ class CSVImporter: ObservableObject {
             isImporting = false
             return
         }
-        defer { url.stopAccessingSecurityScopedResource() }
 
+        let content: String
         do {
-            let content = try String(contentsOf: url, encoding: .utf8)
-            let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
-
-            guard lines.count > 1 else {
-                errorMessage = "CSV file is empty"
-                isImporting = false
-                return
-            }
-
-            let header = parseCSVLine(lines[0])
-            let dataLines = Array(lines.dropFirst())
-            totalRows = dataLines.count
-
-            let colMap = Dictionary(uniqueKeysWithValues: header.enumerated().map { ($1.trimmingCharacters(in: .whitespaces).lowercased(), $0) })
-
-            let timestampIdx = colMap["timestamp"]
-            let serviceTypeIdx = colMap["service type"]
-            let odometerIdx = colMap["odometer reading (miles)"]
-            let rotorIdx = colMap["rotor thickness (mm)"]
-            let amountIdx = colMap["amount"]
-            let commentsIdx = colMap["comments"]
-
-            guard let tsIdx = timestampIdx, let stIdx = serviceTypeIdx, let odIdx = odometerIdx else {
-                errorMessage = "Missing required columns: Timestamp, Service Type, Odometer Reading (Miles)"
-                isImporting = false
-                return
-            }
-
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "M/d/yyyy H:mm:ss"
-            let altFormatter = DateFormatter()
-            altFormatter.dateFormat = "M/d/yyyy"
-            let isoFormatter = DateFormatter()
-            isoFormatter.dateFormat = "yyyy-MM-dd"
-
-            for (i, line) in dataLines.enumerated() {
-                let cols = parseCSVLine(line)
-                guard cols.count > max(tsIdx, stIdx, odIdx) else { continue }
-
-                let timestampStr = cols[tsIdx].trimmingCharacters(in: .whitespaces)
-                let serviceType = cols[stIdx].trimmingCharacters(in: .whitespaces)
-                let odometerStr = cols[odIdx].trimmingCharacters(in: .whitespaces)
-
-                guard !serviceType.isEmpty, let odometer = Double(odometerStr.replacingOccurrences(of: ",", with: "")) else { continue }
-                guard let date = dateFormatter.date(from: timestampStr) ?? altFormatter.date(from: timestampStr) ?? isoFormatter.date(from: timestampStr) else { continue }
-
-                let rotor = rotorIdx.flatMap { idx in cols.count > idx ? Double(cols[idx].trimmingCharacters(in: .whitespaces)) : nil }
-                let amount = amountIdx.flatMap { idx in
-                    cols.count > idx ? Double(cols[idx].trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "$", with: "").replacingOccurrences(of: ",", with: "")) : nil
-                }
-                let comments = commentsIdx.flatMap { idx in cols.count > idx ? cols[idx].trimmingCharacters(in: .whitespaces) : nil }
-
-                do {
-                    if serviceType == "Current Mileage" {
-                        let record = MileageRecord.imported(odometer: odometer, date: date)
-                        try await NeonRepository.shared.saveMileageRecord(record)
-                    } else {
-                        let category = ServiceCategory.category(for: serviceType)
-                        let record = ServiceRecord(
-                            id: UUID().uuidString,
-                            timestamp: date,
-                            serviceType: serviceType,
-                            category: category,
-                            odometerMiles: odometer,
-                            rotorThicknessMM: rotor,
-                            amount: amount,
-                            comments: comments?.isEmpty == true ? nil : comments,
-                            manuallyEdited: false
-                        )
-                        try await NeonRepository.shared.saveServiceRecord(record)
-                    }
-                    importedCount += 1
-                } catch {
-                    Log.csv("error importing row \(i): \(error.localizedDescription)")
-                }
-
-                progress = Double(i + 1) / Double(totalRows)
-            }
-
-            Log.csv("import complete: \(importedCount)/\(totalRows) rows")
-            CSVImporter.markImported()
-            isComplete = true
+            content = try String(contentsOf: url, encoding: .utf8)
         } catch {
             errorMessage = "Failed to read CSV: \(error.localizedDescription)"
             Log.csv("import failed: \(error.localizedDescription)")
+            url.stopAccessingSecurityScopedResource()
+            isImporting = false
+            return
+        }
+        url.stopAccessingSecurityScopedResource()
+
+        let lines = content.components(separatedBy: .newlines).filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return !trimmed.isEmpty && !trimmed.allSatisfy { $0 == "," }
         }
 
+        guard lines.count > 1 else {
+            errorMessage = "CSV file is empty"
+            isImporting = false
+            return
+        }
+
+        let header = parseCSVLine(lines[0])
+        let dataLines = Array(lines.dropFirst())
+        totalRows = dataLines.count
+
+        let colMap = Dictionary(uniqueKeysWithValues: header.enumerated().map { ($1.trimmingCharacters(in: .whitespaces).lowercased(), $0) })
+
+        let timestampIdx = colMap["timestamp"]
+        let serviceTypeIdx = colMap["service type"]
+        let odometerIdx = colMap["odometer reading (miles)"]
+        let rotorIdx = colMap["rotor thickness (mm)"]
+        let amountIdx = colMap["amount"]
+        let commentsIdx = colMap["comments"]
+
+        guard let tsIdx = timestampIdx, let stIdx = serviceTypeIdx, let odIdx = odometerIdx else {
+            errorMessage = "Missing required columns: Timestamp, Service Type, Odometer Reading (Miles)"
+            isImporting = false
+            return
+        }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "M/d/yyyy H:mm:ss"
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        let altFormatter = DateFormatter()
+        altFormatter.dateFormat = "M/d/yyyy"
+        altFormatter.locale = Locale(identifier: "en_US_POSIX")
+        let isoFormatter = DateFormatter()
+        isoFormatter.dateFormat = "yyyy-MM-dd"
+        isoFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        for (i, line) in dataLines.enumerated() {
+            let cols = parseCSVLine(line)
+            guard cols.count > max(tsIdx, stIdx, odIdx) else {
+                skippedCount += 1
+                progress = Double(i + 1) / Double(totalRows)
+                continue
+            }
+
+            let timestampStr = cols[tsIdx].trimmingCharacters(in: .whitespaces)
+            let serviceType = cols[stIdx].trimmingCharacters(in: .whitespaces)
+            let odometerStr = cols[odIdx].trimmingCharacters(in: .whitespaces)
+
+            guard !serviceType.isEmpty, let odometer = Double(odometerStr.replacingOccurrences(of: ",", with: "")) else {
+                skippedCount += 1
+                progress = Double(i + 1) / Double(totalRows)
+                continue
+            }
+            guard let date = dateFormatter.date(from: timestampStr) ?? altFormatter.date(from: timestampStr) ?? isoFormatter.date(from: timestampStr) else {
+                skippedCount += 1
+                Log.csv("skipping row \(i): unparseable date '\(timestampStr)'")
+                progress = Double(i + 1) / Double(totalRows)
+                continue
+            }
+
+            let rotor = rotorIdx.flatMap { idx in cols.count > idx ? Double(cols[idx].trimmingCharacters(in: .whitespaces)) : nil }
+            let amount = amountIdx.flatMap { idx in
+                cols.count > idx ? Double(cols[idx].trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "$", with: "").replacingOccurrences(of: ",", with: "")) : nil
+            }
+            let comments = commentsIdx.flatMap { idx in cols.count > idx ? cols[idx].trimmingCharacters(in: .whitespaces) : nil }
+
+            do {
+                if serviceType == "Current Mileage" {
+                    let record = MileageRecord.imported(odometer: odometer, date: date)
+                    try await NeonRepository.shared.saveMileageRecord(record)
+                } else {
+                    let category = ServiceCategory.category(for: serviceType)
+                    let record = ServiceRecord(
+                        id: UUID().uuidString,
+                        timestamp: date,
+                        serviceType: serviceType,
+                        category: category,
+                        odometerMiles: odometer,
+                        rotorThicknessMM: rotor,
+                        amount: amount,
+                        comments: comments?.isEmpty == true ? nil : comments,
+                        manuallyEdited: false
+                    )
+                    try await NeonRepository.shared.saveServiceRecord(record)
+                }
+                importedCount += 1
+            } catch {
+                skippedCount += 1
+                Log.csv("error importing row \(i): \(error.localizedDescription)")
+            }
+
+            progress = Double(i + 1) / Double(totalRows)
+
+            // Small delay every 10 rows to avoid overwhelming the server
+            if (i + 1) % 10 == 0 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+
+        Log.csv("import complete: \(importedCount) imported, \(skippedCount) skipped out of \(totalRows) rows")
+        CSVImporter.markImported()
+        isComplete = true
         isImporting = false
     }
 
@@ -223,7 +253,7 @@ struct CSVImportView: View {
             ) { result in
                 switch result {
                 case .success(let url):
-                    Task {
+                    Task { @MainActor in
                         do {
                             try await NeonRepository.shared.initializeSchema()
                         } catch {
