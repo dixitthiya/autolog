@@ -81,7 +81,12 @@ class CSVImporter: ObservableObject {
         let dataLines = Array(lines.dropFirst())
         totalRows = dataLines.count
 
-        let colMap = Dictionary(uniqueKeysWithValues: header.enumerated().map { ($1.trimmingCharacters(in: .whitespaces).lowercased(), $0) })
+        // Use reduce to handle duplicate/empty column names (last one wins)
+        let colMap = header.enumerated().reduce(into: [String: Int]()) { dict, pair in
+            let key = pair.element.trimmingCharacters(in: .whitespaces).lowercased()
+            guard !key.isEmpty else { return }
+            dict[key] = pair.offset
+        }
 
         let timestampIdx = colMap["timestamp"]
         let serviceTypeIdx = colMap["service type"]
