@@ -21,9 +21,7 @@ struct AnalyticsView: View {
                     if !spendData.isEmpty {
                         spendOverTimeChart
                     }
-                    if !projectedServices.isEmpty {
-                        projectedServiceDates
-                    }
+                    projectedServiceDates
                 }
                 .padding()
             }
@@ -209,51 +207,167 @@ struct AnalyticsView: View {
 
     // MARK: - Projected Service Dates
 
-    private var projectedServices: [(String, Date)] {
-        let sorted = mileageRecords.sorted { $0.timestamp < $1.timestamp }
-        guard sorted.count >= 2, let first = sorted.first, let last = sorted.last else { return [] }
-        let currentMileage = last.odometerMiles
-        let days = last.timestamp.timeIntervalSince(first.timestamp) / 86400
-        guard days > 30 else { return [] }
-        let milesPerDay = (last.odometerMiles - first.odometerMiles) / days
-        guard milesPerDay > 0 else { return [] }
+    private enum ProjectionStatus: Comparable {
+        case overdue
+        case projected(Date)
+        case noData
 
-        var results: [(String, Date)] = []
+        var sortOrder: Int {
+            switch self {
+            case .overdue: return 0
+            case .projected: return 1
+            case .noData: return 2
+            }
+        }
+    }
+
+    private var milesPerDay: Double {
+        let sorted = mileageRecords.sorted { $0.timestamp < $1.timestamp }
+        guard sorted.count >= 2 else { return 0 }
+
+        // Try last 14 days first
+        let twoWeeksAgo = Calendar.current.date(byAdding: .day, value: -14, to: Date()) ?? Date()
+        let recent14 = sorted.filter { $0.timestamp >= twoWeeksAgo }
+        if let velocity = velocity(from: recent14), velocity > 0 {
+            return velocity
+        }
+
+        // Failsafe: if last 2 weeks is 0, use 3 months prior to the 2-week window
+        let threeMonthsBefore = Calendar.current.date(byAdding: .month, value: -3, to: twoWeeksAgo) ?? Date()
+        let prior3Months = sorted.filter { $0.timestamp >= threeMonthsBefore && $0.timestamp < twoWeeksAgo }
+        if let velocity = velocity(from: prior3Months), velocity > 0 {
+            return velocity
+        }
+
+        return 0
+    }
+
+    private func velocity(from records: [MileageRecord]) -> Double? {
+        guard records.count >= 2, let first = records.first, let last = records.last else { return nil }
+        let days = last.timestamp.timeIntervalSince(first.timestamp) / 86400
+        guard days > 0 else { return nil }
+        return (last.odometerMiles - first.odometerMiles) / days
+    }
+
+    private var projectedServices: [(String, ProjectionStatus)] {
+        let sorted = mileageRecords.sorted { $0.timestamp < $1.timestamp }
+        guard let last = sorted.last else { return [] }
+        let currentMileage = last.odometerMiles
+        let velocity = milesPerDay
+
+        var results: [(String, ProjectionStatus)] = []
         for threshold in thresholds {
-            guard let milesCritical = threshold.milesCritical else { continue }
+            // Skip rotor-only thresholds (they don't have miles/days projection)
+            guard threshold.milesCritical != nil || threshold.daysCritical != nil else { continue }
+
             let lastService = serviceRecords
                 .filter { $0.serviceType == threshold.serviceType }
                 .sorted { $0.timestamp > $1.timestamp }
                 .first
 
-            let milesSince = currentMileage - (lastService?.odometerMiles ?? 0)
-            let milesRemaining = milesCritical - milesSince
-            guard milesRemaining > 0 else { continue }
+            // No service record at all
+            guard let lastService = lastService else {
+                results.append((threshold.serviceType, .noData))
+                continue
+            }
 
-            let daysUntil = milesRemaining / milesPerDay
-            if let date = Calendar.current.date(byAdding: .day, value: Int(daysUntil), to: Date()) {
-                results.append((threshold.serviceType, date))
+            // Calculate miles-based projection
+            var milesDaysUntil: Double?
+            if let milesCritical = threshold.milesCritical {
+                let milesSince = currentMileage - lastService.odometerMiles
+                let milesRemaining = milesCritical - milesSince
+                if velocity > 0 {
+                    milesDaysUntil = milesRemaining / velocity
+                } else {
+                    // Can't project miles without velocity
+                    milesDaysUntil = milesRemaining > 0 ? nil : -1
+                }
+            }
+
+            // Calculate days-based projection
+            var timeDaysUntil: Double?
+            if let daysCritical = threshold.daysCritical {
+                let daysSince = Date().timeIntervalSince(lastService.timestamp) / 86400
+                timeDaysUntil = Double(daysCritical) - daysSince
+            }
+
+            // Use whichever comes first (smallest daysUntil)
+            let daysUntil: Double?
+            switch (milesDaysUntil, timeDaysUntil) {
+            case let (m?, t?): daysUntil = min(m, t)
+            case let (m?, nil): daysUntil = m
+            case let (nil, t?): daysUntil = t
+            case (nil, nil): daysUntil = nil
+            }
+
+            if let daysUntil = daysUntil {
+                if daysUntil <= 0 {
+                    results.append((threshold.serviceType, .overdue))
+                } else if let date = Calendar.current.date(byAdding: .day, value: Int(daysUntil), to: Date()) {
+                    results.append((threshold.serviceType, .projected(date)))
+                }
+            } else {
+                results.append((threshold.serviceType, .noData))
             }
         }
 
-        return results.sorted { $0.1 < $1.1 }
+        return results.sorted { a, b in
+            if a.1.sortOrder != b.1.sortOrder { return a.1.sortOrder < b.1.sortOrder }
+            switch (a.1, b.1) {
+            case let (.projected(d1), .projected(d2)): return d1 < d2
+            default: return a.0 < b.0
+            }
+        }
     }
 
     private var projectedServiceDates: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Projected Next Service")
-                .font(.headline)
-
-            ForEach(projectedServices, id: \.0) { item in
-                HStack {
-                    Text(item.0)
-                        .font(.subheadline)
-                    Spacer()
-                    Text(item.1.formatted(date: .abbreviated, time: .omitted))
-                        .font(.subheadline)
+            HStack {
+                Text("Projected Next Service")
+                    .font(.headline)
+                Spacer()
+                if milesPerDay > 0 {
+                    Text("\(Int(milesPerDay)) mi/day")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 2)
+            }
+
+            if projectedServices.isEmpty {
+                Text("Not enough data")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(projectedServices, id: \.0) { item in
+                    HStack {
+                        Text(item.0)
+                            .font(.subheadline)
+                        Spacer()
+                        switch item.1 {
+                        case .overdue:
+                            Text("OVERDUE")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(.red)
+                                .clipShape(Capsule())
+                        case .projected(let date):
+                            Text(date.formatted(date: .abbreviated, time: .omitted))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        case .noData:
+                            Text("No data")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(.gray)
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
             }
         }
         .padding()
