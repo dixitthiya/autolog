@@ -26,7 +26,7 @@ actor NeonRepository {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(Config.neonAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(Config.neonConnectionString, forHTTPHeaderField: "Neon-Connection-String")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let paramValues: [Any] = params.map { param in
