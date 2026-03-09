@@ -237,48 +237,53 @@ struct DashboardRowView: View {
             }
 
             if row.rotorThickness == nil, (row.milesWarning != nil || row.daysWarning != nil) {
-                switch row.status {
-                case .allGood:
-                    VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 12) {
+                    switch row.status {
+                    case .allGood:
                         if let remaining = row.milesRemaining, remaining > 0 {
-                            Label("\(Int(remaining).formatted()) mi remaining", systemImage: "arrow.forward.circle")
+                            Label("\(Int(remaining).formatted()) mi", systemImage: "arrow.forward.circle")
                                 .font(.caption)
                                 .foregroundStyle(row.status.color)
                         }
                         if let days = row.daysRemaining, days > 0 {
-                            Label("\(timeLabel(days)) remaining", systemImage: "clock")
+                            Label(timeLabel(days), systemImage: "clock")
                                 .font(.caption)
                                 .foregroundStyle(row.status.color)
                         }
-                    }
-                case .serviceSoon:
-                    VStack(alignment: .leading, spacing: 2) {
+                        Text("remaining")
+                            .font(.caption)
+                            .foregroundStyle(row.status.color)
+                    case .serviceSoon:
+                        Text("Critical in")
+                            .font(.caption)
+                            .foregroundStyle(row.status.color)
                         if let toCritical = row.milesToCritical, toCritical > 0 {
-                            Label("Critical in \(Int(toCritical).formatted()) mi", systemImage: "exclamationmark.triangle")
+                            Label("\(Int(toCritical).formatted()) mi", systemImage: "exclamationmark.triangle")
                                 .font(.caption)
                                 .foregroundStyle(row.status.color)
                         }
                         if let days = row.daysToCritical, days > 0 {
-                            Label("Critical in \(timeLabel(days))", systemImage: "clock.badge.exclamationmark")
+                            Label(timeLabel(days), systemImage: "clock.badge.exclamationmark")
                                 .font(.caption)
                                 .foregroundStyle(row.status.color)
                         }
-                    }
-                case .critical:
-                    VStack(alignment: .leading, spacing: 2) {
+                    case .critical:
+                        Text("Overdue by")
+                            .font(.caption)
+                            .foregroundStyle(row.status.color)
                         if let toCritical = row.milesToCritical {
-                            Label("Overdue by \(Int(abs(toCritical)).formatted()) mi", systemImage: "exclamationmark.circle.fill")
+                            Label("\(Int(abs(toCritical)).formatted()) mi", systemImage: "exclamationmark.circle.fill")
                                 .font(.caption)
                                 .foregroundStyle(row.status.color)
                         }
                         if let days = row.daysToCritical, days < 0 {
-                            Label("Overdue by \(timeLabel(abs(days)))", systemImage: "clock.badge.exclamationmark")
+                            Label(timeLabel(abs(days)), systemImage: "clock.badge.exclamationmark")
                                 .font(.caption)
                                 .foregroundStyle(row.status.color)
                         }
+                    case .noData:
+                        EmptyView()
                     }
-                case .noData:
-                    EmptyView()
                 }
             }
         }
