@@ -49,13 +49,15 @@ class MileageService: ObservableObject {
             // Read RPM
             obdStatus = "Reading RPM..."
             var rpm = 0
+            var rpmReadSuccess = false
             do {
                 let rpmRaw = try await obd.sendCommand("010C")
                 rpm = PIDParser.parseRPM(rpmRaw)
+                rpmReadSuccess = true
                 await NeonRepository.shared.logOBDEvent(
                     eventType: "rpm_check", pid: "010C", rawResponse: rpmRaw,
                     parsedValue: Double(rpm), success: rpm > 0,
-                    errorMessage: rpm == 0 ? "RPM=0 (engine off or parse failed)" : nil)
+                    errorMessage: rpm == 0 ? "RPM=0 (engine off)" : nil)
             } catch {
                 await NeonRepository.shared.logOBDEvent(
                     eventType: "rpm_check", pid: "010C", rawResponse: nil,
@@ -63,8 +65,15 @@ class MileageService: ObservableObject {
                     errorMessage: error.localizedDescription)
             }
 
-            if rpm == 0 {
-                obdStatus = "RPM unavailable, continuing..."
+            // Only skip if RPM was successfully read as 0 (confirmed engine off)
+            // If RPM read failed (timeout/junk), continue — fix #3 will catch bad data
+            if rpmReadSuccess && rpm == 0 {
+                obdStatus = "Engine off — skipping capture"
+                await NeonRepository.shared.logOBDEvent(
+                    eventType: "skipped_engine_off", pid: "010C", rawResponse: nil,
+                    parsedValue: 0, success: false,
+                    errorMessage: "RPM=0, engine confirmed off")
+                return
             }
 
             // Read odometer PID (will likely fail on 2013 Elantra)
@@ -109,6 +118,18 @@ class MileageService: ObservableObject {
             guard odometer > 0 else {
                 obdStatus = "Enter odometer manually"
                 needsManualEntry = true
+                return
+            }
+
+            // Sanity check: reject if odometer drops more than 1 mile from last known value
+            if let lastRecord = try await NeonRepository.shared.getLatestMileageRecord(),
+               lastRecord.odometerMiles > 0,
+               odometer < lastRecord.odometerMiles - 1 {
+                obdStatus = "Bad reading — skipped"
+                await NeonRepository.shared.logOBDEvent(
+                    eventType: "sanity_check_failed", pid: nil, rawResponse: nil,
+                    parsedValue: odometer, success: false,
+                    errorMessage: "Odometer dropped: \(Int(odometer)) < last \(Int(lastRecord.odometerMiles))")
                 return
             }
 
@@ -184,8 +205,12 @@ class MileageService: ObservableObject {
         }
 
         guard let currentDist = currentDistSinceCleared else {
-            obdStatus = "Using manual: \(Int(ref.odometerMiles)) mi"
-            return ref.odometerMiles
+            // dist unavailable — never regress below last known mileage
+            let latest = try await NeonRepository.shared.getLatestMileageRecord()
+            let lastKnown = latest?.odometerMiles ?? 0
+            let best = max(ref.odometerMiles, lastKnown)
+            obdStatus = "Using last known: \(Int(best)) mi"
+            return best
         }
 
         guard let refDist = ref.distSinceCodesCleared else {
