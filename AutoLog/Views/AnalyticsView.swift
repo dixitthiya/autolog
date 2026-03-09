@@ -10,6 +10,24 @@ struct AnalyticsView: View {
     @State private var selectedMonth: String?
     @State private var selectedSpendDate: Date?
     @State private var selectedRotorDate: Date?
+    @State private var milesTimeFilter: TimeFilter = .threeMonths
+    @State private var spendTimeFilter: TimeFilter = .threeMonths
+
+    private enum TimeFilter: String, CaseIterable {
+        case threeMonths = "3M"
+        case sixMonths = "6M"
+        case oneYear = "1Y"
+        case all = "All"
+
+        var monthsBack: Int? {
+            switch self {
+            case .threeMonths: return 3
+            case .sixMonths: return 6
+            case .oneYear: return 12
+            case .all: return nil
+            }
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -69,16 +87,42 @@ struct AnalyticsView: View {
             let prevKey = monthOrder[i - 1]
             let currKey = monthOrder[i]
             guard let prev = monthlyRange[prevKey], let curr = monthlyRange[currKey] else { continue }
-            let miles = curr.max - prev.min
+            let miles = curr.max - prev.max
             guard miles > 0 else { continue }
             result.append((currKey, miles))
         }
         return result
     }
 
+    private var filteredMonthlyMiles: [(String, Double)] {
+        guard let months = milesTimeFilter.monthsBack else { return monthlyMiles }
+        let count = monthlyMiles.count
+        return Array(monthlyMiles.suffix(months))
+    }
+
     private var avgMonthlyMiles: Double {
-        guard !monthlyMiles.isEmpty else { return 0 }
-        return monthlyMiles.map(\.1).reduce(0, +) / Double(monthlyMiles.count)
+        guard !filteredMonthlyMiles.isEmpty else { return 0 }
+        return filteredMonthlyMiles.map(\.1).reduce(0, +) / Double(filteredMonthlyMiles.count)
+    }
+
+    private func timeFilterPicker(selection: Binding<TimeFilter>) -> some View {
+        HStack(spacing: 0) {
+            ForEach(TimeFilter.allCases, id: \.self) { filter in
+                Button {
+                    withAnimation { selection.wrappedValue = filter }
+                } label: {
+                    Text(filter.rawValue)
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(selection.wrappedValue == filter ? Color.blue : Color.clear)
+                        .foregroundStyle(selection.wrappedValue == filter ? .white : .secondary)
+                        .clipShape(Capsule())
+                }
+            }
+        }
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(Capsule())
     }
 
     private var milesPerMonthChart: some View {
@@ -88,7 +132,7 @@ struct AnalyticsView: View {
                     .font(.headline)
                 Spacer()
                 if let selected = selectedMonth,
-                   let data = monthlyMiles.first(where: { $0.0 == selected }) {
+                   let data = filteredMonthlyMiles.first(where: { $0.0 == selected }) {
                     Text("\(data.0): \(Int(data.1).formatted()) mi")
                         .font(.caption.bold())
                         .foregroundStyle(.blue)
@@ -99,8 +143,10 @@ struct AnalyticsView: View {
                 }
             }
 
+            timeFilterPicker(selection: $milesTimeFilter)
+
             Chart {
-                ForEach(monthlyMiles, id: \.0) { item in
+                ForEach(filteredMonthlyMiles, id: \.0) { item in
                     BarMark(x: .value("Month", item.0), y: .value("Miles", item.1))
                         .foregroundStyle(item.0 == selectedMonth ? .blue : .blue.opacity(0.5))
                         .cornerRadius(4)
@@ -125,11 +171,26 @@ struct AnalyticsView: View {
                     }
             }
             .chartYAxisLabel("miles")
-            .chartXSelection(value: $selectedMonth)
             .frame(height: 220)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                selectedMonth = nil
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .gesture(
+                            SpatialTapGesture()
+                                .onEnded { value in
+                                    let plotFrame = geo[proxy.plotFrame!]
+                                    let tapX = value.location.x - plotFrame.origin.x
+                                    let barWidth = plotFrame.width / CGFloat(filteredMonthlyMiles.count)
+                                    let index = Int(tapX / barWidth)
+                                    if index >= 0 && index < filteredMonthlyMiles.count {
+                                        let tapped = filteredMonthlyMiles[index].0
+                                        selectedMonth = selectedMonth == tapped ? nil : tapped
+                                    } else {
+                                        selectedMonth = nil
+                                    }
+                                }
+                        )
+                }
             }
         }
         .padding()
@@ -154,6 +215,18 @@ struct AnalyticsView: View {
         }
     }
 
+    private var filteredSpendData: [(Date, Double)] {
+        guard let months = spendTimeFilter.monthsBack else { return spendData }
+        let cutoff = Calendar.current.date(byAdding: .month, value: -months, to: Date()) ?? Date()
+        return spendData.filter { $0.0 >= cutoff }
+    }
+
+    private var filteredIndividualSpend: [(Date, Double, String)] {
+        guard let months = spendTimeFilter.monthsBack else { return individualSpend }
+        let cutoff = Calendar.current.date(byAdding: .month, value: -months, to: Date()) ?? Date()
+        return individualSpend.filter { $0.0 >= cutoff }
+    }
+
     private var individualSpend: [(Date, Double, String)] {
         serviceRecords
             .compactMap { r -> (Date, Double, String)? in
@@ -169,17 +242,20 @@ struct AnalyticsView: View {
                 Text("Cumulative Spend")
                     .font(.headline)
                 Spacer()
-                if let total = spendData.last?.1 {
-                    Text("Total: $\(Int(total).formatted())")
+                if let total = filteredSpendData.last?.1 {
+                    let rangeSpend = total - (filteredSpendData.first?.1 ?? 0)
+                    Text("Spent: $\(Int(rangeSpend).formatted())")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
+            timeFilterPicker(selection: $spendTimeFilter)
+
             // Selected point detail
             if let selected = selectedSpendDate,
-               let closest = spendData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }),
-               let individual = individualSpend.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) {
+               let closest = filteredSpendData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }),
+               let individual = filteredIndividualSpend.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) {
                 HStack {
                     Text(individual.2)
                         .font(.caption)
@@ -192,7 +268,7 @@ struct AnalyticsView: View {
             }
 
             Chart {
-                ForEach(spendData, id: \.0) { point in
+                ForEach(filteredSpendData, id: \.0) { point in
                     LineMark(x: .value("Date", point.0), y: .value("$", point.1))
                         .foregroundStyle(.green)
                         .interpolationMethod(.monotone)
@@ -220,11 +296,27 @@ struct AnalyticsView: View {
                 }
             }
             .chartYAxisLabel("$")
-            .chartXSelection(value: $selectedSpendDate)
             .frame(height: 200)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                selectedSpendDate = nil
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .gesture(
+                            SpatialTapGesture()
+                                .onEnded { value in
+                                    let origin = geo[proxy.plotFrame!].origin
+                                    let location = CGPoint(x: value.location.x - origin.x, y: value.location.y - origin.y)
+                                    if let tappedDate: Date = proxy.value(atX: location.x) {
+                                        if selectedSpendDate != nil {
+                                            selectedSpendDate = nil
+                                        } else {
+                                            selectedSpendDate = tappedDate
+                                        }
+                                    } else {
+                                        selectedSpendDate = nil
+                                    }
+                                }
+                        )
+                }
             }
         }
         .padding()
@@ -398,11 +490,27 @@ struct AnalyticsView: View {
                 "Rear": Color.orange
             ])
             .chartYAxisLabel("mm")
-            .chartXSelection(value: $selectedRotorDate)
             .frame(height: 250)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                selectedRotorDate = nil
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .gesture(
+                            SpatialTapGesture()
+                                .onEnded { value in
+                                    let origin = geo[proxy.plotFrame!].origin
+                                    let location = CGPoint(x: value.location.x - origin.x, y: value.location.y - origin.y)
+                                    if let tappedDate: Date = proxy.value(atX: location.x) {
+                                        if selectedRotorDate != nil {
+                                            selectedRotorDate = nil
+                                        } else {
+                                            selectedRotorDate = tappedDate
+                                        }
+                                    } else {
+                                        selectedRotorDate = nil
+                                    }
+                                }
+                        )
+                }
             }
         }
         .padding()
@@ -417,7 +525,7 @@ struct AnalyticsView: View {
 
     private func isClosestSpend(_ date: Date) -> Bool {
         guard let selected = selectedSpendDate,
-              let closest = spendData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) else { return false }
+              let closest = filteredSpendData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) else { return false }
         return closest.0 == date
     }
 
