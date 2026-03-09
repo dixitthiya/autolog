@@ -1,6 +1,6 @@
 workflows:
-  ios-build-and-test:
-    name: iOS Build & Test
+  ios-build-ipa:
+    name: iOS Build IPA
     max_build_duration: 30
     instance_type: mac_mini_m2
     environment:
@@ -11,7 +11,7 @@ workflows:
     scripts:
       - name: Generate Config.swift from env variable
         script: |
-          cat > AutoLog/App/Config.swift <<EOF
+          cat > AutoLog/App/Config.swift <<'SWIFTEOF'
           import Foundation
 
           struct Config {
@@ -32,7 +32,9 @@ workflows:
               static let obdCommandTimeout: TimeInterval = 5
               static let maxRetryCount = 10
           }
-          EOF
+          SWIFTEOF
+          # Now substitute the actual env var value
+          sed -i '' "s|\$NEON_CONNECTION_STRING|${NEON_CONNECTION_STRING}|g" AutoLog/App/Config.swift
 
       - name: Install XcodeGen
         script: |
@@ -42,44 +44,32 @@ workflows:
         script: |
           xcodegen generate
 
-      - name: Build for testing
+      - name: Build unsigned archive for device
         script: |
-          xcodebuild build-for-testing \
+          xcodebuild archive \
             -project AutoLog.xcodeproj \
             -scheme AutoLog \
-            -destination "platform=iOS Simulator,name=iPhone 15,OS=18.2" \
-            -allowProvisioningUpdates \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            | xcpretty
-
-      - name: Run unit tests
-        script: |
-          xcodebuild test \
-            -project AutoLog.xcodeproj \
-            -scheme AutoLog \
-            -destination "platform=iOS Simulator,name=iPhone 15,OS=18.2" \
-            -resultBundlePath build/tests/TestResults.xcresult \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            | xcpretty
-
-      - name: Build release (no signing)
-        script: |
-          xcodebuild build \
-            -project AutoLog.xcodeproj \
-            -scheme AutoLog \
-            -destination "generic/platform=iOS Simulator" \
+            -destination "generic/platform=iOS" \
+            -archivePath build/AutoLog.xcarchive \
             -configuration Release \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
             | xcpretty
+
+      - name: Package IPA from archive
+        script: |
+          APP_PATH="build/AutoLog.xcarchive/Products/Applications/AutoLog.app"
+          mkdir -p build/ipa/Payload
+          cp -r "$APP_PATH" build/ipa/Payload/
+          cd build/ipa
+          zip -r ../AutoLog.ipa Payload
+          echo "IPA created at build/AutoLog.ipa"
+          ls -lh ../AutoLog.ipa
 
     artifacts:
-      - build/tests/**
+      - build/AutoLog.ipa
 
     publishing:
       email:
