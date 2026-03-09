@@ -502,7 +502,9 @@ actor NeonRepository {
                 daysAfterService: daysAfter,
                 monthsAfterService: monthsAfter,
                 milesWarning: threshold.milesWarning,
-                milesCritical: threshold.milesCritical
+                milesCritical: threshold.milesCritical,
+                daysWarning: threshold.daysWarning,
+                daysCritical: threshold.daysCritical
             ))
         }
 

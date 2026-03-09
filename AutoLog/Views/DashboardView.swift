@@ -230,31 +230,52 @@ struct DashboardRowView: View {
                 }
 
                 if row.daysAfterService > 0 {
-                    Text("\(Int(row.monthsAfterService))mo")
+                    Text(timeLabel(row.daysAfterService))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            if row.rotorThickness == nil, row.milesWarning != nil {
+            if row.rotorThickness == nil, (row.milesWarning != nil || row.daysWarning != nil) {
                 switch row.status {
                 case .allGood:
-                    if let remaining = row.milesRemaining, remaining > 0 {
-                        Label("\(Int(remaining).formatted()) mi remaining", systemImage: "arrow.forward.circle")
-                            .font(.caption)
-                            .foregroundStyle(row.status.color)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let remaining = row.milesRemaining, remaining > 0 {
+                            Label("\(Int(remaining).formatted()) mi remaining", systemImage: "arrow.forward.circle")
+                                .font(.caption)
+                                .foregroundStyle(row.status.color)
+                        }
+                        if let days = row.daysRemaining, days > 0 {
+                            Label("\(timeLabel(days)) remaining", systemImage: "clock")
+                                .font(.caption)
+                                .foregroundStyle(row.status.color)
+                        }
                     }
                 case .serviceSoon:
-                    if let toCritical = row.milesToCritical, toCritical > 0 {
-                        Label("Critical in \(Int(toCritical).formatted()) mi", systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(row.status.color)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let toCritical = row.milesToCritical, toCritical > 0 {
+                            Label("Critical in \(Int(toCritical).formatted()) mi", systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(row.status.color)
+                        }
+                        if let days = row.daysToCritical, days > 0 {
+                            Label("Critical in \(timeLabel(days))", systemImage: "clock.badge.exclamationmark")
+                                .font(.caption)
+                                .foregroundStyle(row.status.color)
+                        }
                     }
                 case .critical:
-                    if let toCritical = row.milesToCritical {
-                        Label("Overdue by \(Int(abs(toCritical)).formatted()) mi", systemImage: "exclamationmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(row.status.color)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let toCritical = row.milesToCritical {
+                            Label("Overdue by \(Int(abs(toCritical)).formatted()) mi", systemImage: "exclamationmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(row.status.color)
+                        }
+                        if let days = row.daysToCritical, days < 0 {
+                            Label("Overdue by \(timeLabel(abs(days)))", systemImage: "clock.badge.exclamationmark")
+                                .font(.caption)
+                                .foregroundStyle(row.status.color)
+                        }
                     }
                 case .noData:
                     EmptyView()
@@ -262,6 +283,19 @@ struct DashboardRowView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private func timeLabel(_ days: Int) -> String {
+        let months = days / 30
+        if months >= 12 {
+            let years = months / 12
+            let rem = months % 12
+            return rem > 0 ? "\(years)yr \(rem)mo" : "\(years)yr"
+        } else if months >= 1 {
+            return "\(months)mo"
+        } else {
+            return "\(days)d"
+        }
     }
 
     private var statusBadge: some View {

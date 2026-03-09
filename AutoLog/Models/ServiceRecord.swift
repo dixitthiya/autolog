@@ -109,6 +109,8 @@ struct DashboardRow: Identifiable {
     let monthsAfterService: Double
     let milesWarning: Double?
     let milesCritical: Double?
+    let daysWarning: Int?
+    let daysCritical: Int?
 
     var milesRemaining: Double? {
         guard let warning = milesWarning else { return nil }
@@ -118,6 +120,26 @@ struct DashboardRow: Identifiable {
     var milesToCritical: Double? {
         guard let critical = milesCritical else { return nil }
         return critical - milesAfterService
+    }
+
+    var daysRemaining: Int? {
+        guard let warning = daysWarning else { return nil }
+        return warning - daysAfterService
+    }
+
+    var daysToCritical: Int? {
+        guard let critical = daysCritical else { return nil }
+        return critical - daysAfterService
+    }
+
+    var monthsRemaining: Double? {
+        guard let days = daysRemaining else { return nil }
+        return Double(days) / 30.44
+    }
+
+    var monthsToCritical: Double? {
+        guard let days = daysToCritical else { return nil }
+        return Double(days) / 30.44
     }
 }
 
