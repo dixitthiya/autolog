@@ -41,9 +41,12 @@ class BLEManager: NSObject, ObservableObject {
     private var peripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
-    private var autoScanTimer: Timer?
+    private var autoScanTask: Task<Void, Never>?
     private var dataBuffer = Data()
     private var wasDisconnectedByOtherApp = false
+
+    // Persist last known adapter UUID for direct reconnection
+    private let savedPeripheralKey = "com.autolog.lastPeripheralUUID"
 
     private var dataContinuation: AsyncStream<Data>.Continuation?
     private(set) var dataStream: AsyncStream<Data>!
@@ -118,8 +121,8 @@ class BLEManager: NSObject, ObservableObject {
 
     /// Disconnect and don't auto-reconnect
     func disconnect() {
-        autoScanTimer?.invalidate()
-        autoScanTimer = nil
+        autoScanTask?.cancel()
+        autoScanTask = nil
         if let peripheral = peripheral {
             centralManager.cancelPeripheralConnection(peripheral)
         }
@@ -127,7 +130,7 @@ class BLEManager: NSObject, ObservableObject {
         Log.ble("disconnected (manual)")
     }
 
-    /// Disconnect after quick read — schedule next auto-scan
+    /// Disconnect after quick read — restart auto-scan loop
     func disconnectAfterRead() {
         if let peripheral = peripheral {
             centralManager.cancelPeripheralConnection(peripheral)
@@ -135,7 +138,7 @@ class BLEManager: NSObject, ObservableObject {
         connectionState = .disconnected
         clearPeripheralState()
         Log.ble("disconnected after read")
-        scheduleAutoScan()
+        startAutoScanLoop()
     }
 
     func send(_ command: String) {
@@ -154,20 +157,55 @@ class BLEManager: NSObject, ObservableObject {
         guard autoModeEnabled else { return }
         Log.ble("auto-scan cycle started (every \(Int(autoScanInterval))s)")
         // Try immediately on first launch
-        startScanning()
-        scheduleAutoScan()
+        connectOrScan()
+        startAutoScanLoop()
     }
 
-    private func scheduleAutoScan() {
-        autoScanTimer?.invalidate()
+    private func startAutoScanLoop() {
+        autoScanTask?.cancel()
         guard autoModeEnabled else { return }
-        autoScanTimer = Timer.scheduledTimer(withTimeInterval: autoScanInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self, self.connectionState == .disconnected else { return }
-                Log.ble("auto-scan triggered")
-                self.startScanning()
+        autoScanTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(self?.autoScanInterval ?? 120) * 1_000_000_000)
+                guard !Task.isCancelled, let self = self else { break }
+                if self.connectionState == .disconnected {
+                    Log.ble("auto-scan triggered")
+                    self.connectOrScan()
+                } else {
+                    Log.ble("auto-scan skipped (state: \(self.connectionState.rawValue))")
+                }
             }
         }
+    }
+
+    /// Try direct reconnect to saved peripheral first, fall back to scanning
+    func connectOrScan() {
+        // Try direct reconnect using saved peripheral UUID
+        if let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
+           let uuid = UUID(uuidString: uuidString) {
+            let knownPeripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
+            if let saved = knownPeripherals.first {
+                Log.ble("reconnecting to saved adapter: \(saved.name ?? uuid.uuidString)")
+                self.peripheral = saved
+                saved.delegate = self
+                connectionState = .connecting
+                centralManager.connect(saved, options: nil)
+
+                // Fall back to scan if direct connect doesn't work in 5 seconds
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    if connectionState == .connecting {
+                        Log.ble("direct reconnect timeout, falling back to scan")
+                        centralManager.cancelPeripheralConnection(saved)
+                        connectionState = .disconnected
+                        clearPeripheralState()
+                        startScanning()
+                    }
+                }
+                return
+            }
+        }
+        startScanning()
     }
 
     private func clearPeripheralState() {
@@ -201,6 +239,8 @@ extension BLEManager: CBCentralManagerDelegate {
             peripheral.delegate = self
             centralManager.stopScan()
             connectionState = .connecting
+            // Save UUID for direct reconnection next time
+            UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: savedPeripheralKey)
             centralManager.connect(peripheral, options: nil)
         }
     }

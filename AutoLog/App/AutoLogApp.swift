@@ -38,7 +38,7 @@ struct AutoLogApp: App {
                     await syncManager.syncAll()
                     // Try to connect when app comes to foreground
                     if bleManager.connectionState == .disconnected {
-                        bleManager.startScanning()
+                        bleManager.connectOrScan()
                     }
                 }
             }

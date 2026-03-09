@@ -112,12 +112,12 @@ class MileageService: ObservableObject {
                 return
             }
 
-            // Save or update today's record
-            let todayRecord = try await NeonRepository.shared.getTodayMileageRecord()
+            // Save or update today's BLE_AUTO record (never overwrite MANUAL entries)
+            let todayBLERecord = try await NeonRepository.shared.getTodayBLEAutoRecord()
             let record = MileageRecord.bleAuto(odometer: odometer, distSinceCodesCleared: distSinceCleared)
 
-            if let existing = todayRecord {
-                // Update today's record with latest reading
+            if let existing = todayBLERecord {
+                // Update today's BLE_AUTO record with latest reading
                 let updated = MileageRecord(
                     id: existing.id,
                     timestamp: Date(),
@@ -127,7 +127,7 @@ class MileageService: ObservableObject {
                 )
                 do {
                     try await NeonRepository.shared.updateMileageRecord(updated)
-                    Log.db("updated today's mileage: \(Int(odometer)) miles")
+                    Log.db("updated today's BLE mileage: \(Int(odometer)) miles")
                 } catch {
                     Log.db("failed to update: \(error.localizedDescription)")
                 }
@@ -146,6 +146,10 @@ class MileageService: ObservableObject {
                         errorMessage: "Queued: \(error.localizedDescription)")
                 }
             }
+
+            // Save snapshot for every capture (auto-purges after 7 days)
+            await NeonRepository.shared.saveMileageSnapshot(
+                odometer: odometer, distSinceCodesCleared: distSinceCleared, rpm: rpm)
 
             currentMileage = odometer
             lastSyncDate = Date()

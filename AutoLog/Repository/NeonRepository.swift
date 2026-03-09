@@ -148,6 +148,22 @@ actor NeonRepository {
             )
         """)
 
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS mileage_snapshots (
+                id TEXT PRIMARY KEY,
+                timestamp TIMESTAMPTZ NOT NULL,
+                odometer_miles DOUBLE PRECISION NOT NULL,
+                dist_since_codes_cleared DOUBLE PRECISION,
+                rpm INTEGER,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+
+        // Auto-purge snapshots older than 7 days
+        try await executeNoResult("""
+            DELETE FROM mileage_snapshots WHERE timestamp < now() - INTERVAL '7 days'
+        """)
+
         Log.db("schema initialized")
         try await seedThresholds()
     }
@@ -221,10 +237,11 @@ actor NeonRepository {
         try await executeNoResult("DELETE FROM mileage_records WHERE id = $1", params: [id])
     }
 
-    func getTodayMileageRecord() async throws -> MileageRecord? {
+    func getTodayBLEAutoRecord() async throws -> MileageRecord? {
         let rows = try await execute("""
             SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records
-            WHERE DATE(timestamp) = CURRENT_DATE ORDER BY timestamp DESC LIMIT 1
+            WHERE DATE(timestamp) = CURRENT_DATE AND source = 'BLE_AUTO'
+            ORDER BY timestamp DESC LIMIT 1
         """)
         return rows.first.flatMap { parseMileageRecord($0) }
     }
@@ -293,6 +310,24 @@ actor NeonRepository {
     }
 
     // MARK: - OBD Connection Logs
+
+    func saveMileageSnapshot(odometer: Double, distSinceCodesCleared: Double?, rpm: Int?) async {
+        do {
+            try await executeNoResult("""
+                INSERT INTO mileage_snapshots (id, timestamp, odometer_miles, dist_since_codes_cleared, rpm)
+                VALUES ($1, $2, $3, $4, $5)
+            """, params: [
+                UUID().uuidString, Date(), odometer,
+                distSinceCodesCleared as Any, rpm as Any
+            ])
+            // Purge old snapshots (keep 7 days)
+            try await executeNoResult("""
+                DELETE FROM mileage_snapshots WHERE timestamp < now() - INTERVAL '7 days'
+            """)
+        } catch {
+            Log.db("failed to save mileage snapshot: \(error.localizedDescription)")
+        }
+    }
 
     func logOBDEvent(eventType: String, pid: String?, rawResponse: String?, parsedValue: Double?, success: Bool, errorMessage: String?) async {
         do {
