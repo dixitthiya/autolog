@@ -103,9 +103,12 @@ actor NeonRepository {
             )
         """)
 
-        // Add column if table already exists without it
+        // Add columns if table already exists without them
         try await executeNoResult("""
             ALTER TABLE mileage_records ADD COLUMN IF NOT EXISTS dist_since_codes_cleared DOUBLE PRECISION
+        """)
+        try await executeNoResult("""
+            ALTER TABLE mileage_records ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now()
         """)
 
         try await executeNoResult("""
@@ -229,7 +232,7 @@ actor NeonRepository {
 
     func updateMileageRecord(_ record: MileageRecord) async throws {
         try await executeNoResult("""
-            UPDATE mileage_records SET timestamp = $2, odometer_miles = $3, source = $4, dist_since_codes_cleared = $5 WHERE id = $1
+            UPDATE mileage_records SET timestamp = $2, odometer_miles = $3, source = $4, dist_since_codes_cleared = $5, synced_at = now() WHERE id = $1
         """, params: [record.id, record.timestamp, record.odometerMiles, record.source, record.distSinceCodesCleared as Any])
     }
 
