@@ -248,6 +248,56 @@ actor NeonRepository {
         try await executeNoResult("DELETE FROM service_records WHERE id = $1", params: [id])
     }
 
+    // MARK: - Diagnostics
+
+    func runDiagnostics() async -> String {
+        var result = ""
+        result += "URL: \(Config.neonBaseURL)\n"
+        result += "ConnStr: \(Config.neonConnectionString.prefix(30))...\n\n"
+
+        // Test raw query
+        do {
+            let mileageRows = try await execute("SELECT COUNT(*) as cnt FROM mileage_records")
+            let mileageCount = parseString(mileageRows.first?["cnt"]) ?? "nil"
+            result += "Mileage records: \(mileageCount)\n"
+        } catch {
+            result += "Mileage query FAILED: \(error.localizedDescription)\n"
+        }
+
+        do {
+            let serviceRows = try await execute("SELECT COUNT(*) as cnt FROM service_records")
+            let serviceCount = parseString(serviceRows.first?["cnt"]) ?? "nil"
+            result += "Service records: \(serviceCount)\n"
+        } catch {
+            result += "Service query FAILED: \(error.localizedDescription)\n"
+        }
+
+        do {
+            let thresholdRows = try await execute("SELECT COUNT(*) as cnt FROM service_thresholds")
+            let thresholdCount = parseString(thresholdRows.first?["cnt"]) ?? "nil"
+            result += "Thresholds: \(thresholdCount)\n"
+        } catch {
+            result += "Threshold query FAILED: \(error.localizedDescription)\n"
+        }
+
+        // Test a raw SELECT to see the actual response format
+        do {
+            let sample = try await execute("SELECT id, odometer_miles, source FROM mileage_records LIMIT 1")
+            if let first = sample.first {
+                result += "\nSample row keys: \(Array(first.keys))\n"
+                for (k, v) in first {
+                    result += "  \(k): \(type(of: v)) = \(v)\n"
+                }
+            } else {
+                result += "\nSample: no rows returned\n"
+            }
+        } catch {
+            result += "\nSample query FAILED: \(error.localizedDescription)\n"
+        }
+
+        return result
+    }
+
     // MARK: - Thresholds
 
     func getThresholds() async throws -> [ServiceThreshold] {

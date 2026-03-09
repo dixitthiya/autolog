@@ -9,6 +9,8 @@ struct DashboardView: View {
     @State private var isLoading = false
     @State private var isOffline = false
     @State private var errorMessage: String?
+    @State private var diagnosticResult: String = ""
+    @State private var showDiagnostics = false
 
     var body: some View {
         NavigationStack {
@@ -18,6 +20,20 @@ struct DashboardView: View {
                     bleSection
                     if !dashboardRows.isEmpty {
                         statusSection
+                    }
+                    Section("Debug") {
+                        Button(showDiagnostics ? "Hide Diagnostics" : "Run Diagnostics") {
+                            Task {
+                                diagnosticResult = "Running..."
+                                showDiagnostics = true
+                                diagnosticResult = await NeonRepository.shared.runDiagnostics()
+                            }
+                        }
+                        if showDiagnostics && !diagnosticResult.isEmpty {
+                            Text(diagnosticResult)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
                     }
                 }
                 .refreshable { await loadDashboard() }
