@@ -66,9 +66,11 @@ class CSVImporter: ObservableObject {
             }
 
             let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "M/d/yyyy"
+            dateFormatter.dateFormat = "M/d/yyyy H:mm:ss"
             let altFormatter = DateFormatter()
-            altFormatter.dateFormat = "yyyy-MM-dd"
+            altFormatter.dateFormat = "M/d/yyyy"
+            let isoFormatter = DateFormatter()
+            isoFormatter.dateFormat = "yyyy-MM-dd"
 
             for (i, line) in dataLines.enumerated() {
                 let cols = parseCSVLine(line)
@@ -79,7 +81,7 @@ class CSVImporter: ObservableObject {
                 let odometerStr = cols[odIdx].trimmingCharacters(in: .whitespaces)
 
                 guard !serviceType.isEmpty, let odometer = Double(odometerStr.replacingOccurrences(of: ",", with: "")) else { continue }
-                guard let date = dateFormatter.date(from: timestampStr) ?? altFormatter.date(from: timestampStr) else { continue }
+                guard let date = dateFormatter.date(from: timestampStr) ?? altFormatter.date(from: timestampStr) ?? isoFormatter.date(from: timestampStr) else { continue }
 
                 let rotor = rotorIdx.flatMap { idx in cols.count > idx ? Double(cols[idx].trimmingCharacters(in: .whitespaces)) : nil }
                 let amount = amountIdx.flatMap { idx in
@@ -217,11 +219,19 @@ struct CSVImportView: View {
             .navigationBarTitleDisplayMode(.inline)
             .fileImporter(
                 isPresented: $showFilePicker,
-                allowedContentTypes: [UTType.commaSeparatedText, UTType.plainText]
+                allowedContentTypes: [UTType.commaSeparatedText, UTType.plainText, UTType.data]
             ) { result in
                 switch result {
                 case .success(let url):
-                    Task { await importer.importCSV(from: url) }
+                    Task {
+                        do {
+                            try await NeonRepository.shared.initializeSchema()
+                        } catch {
+                            importer.errorMessage = "Database not ready: \(error.localizedDescription)"
+                            return
+                        }
+                        await importer.importCSV(from: url)
+                    }
                 case .failure(let error):
                     importer.errorMessage = error.localizedDescription
                 }
