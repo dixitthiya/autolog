@@ -9,32 +9,21 @@ workflows:
       groups:
         - neon_credentials
     scripts:
-      - name: Generate Config.swift from env variable
+      - name: Generate Config.swift from env variables
         script: |
-          cat > AutoLog/App/Config.swift <<'SWIFTEOF'
+          cat > AutoLog/App/Config.swift <<EOF
           import Foundation
 
           struct Config {
-              static let neonConnectionString = "$NEON_CONNECTION_STRING"
-
-              static var neonBaseURL: String {
-                  guard let url = URLComponents(string: neonConnectionString.replacingOccurrences(of: "postgresql://", with: "https://")) else { return "" }
-                  return "https://\(url.host ?? "")/sql"
-              }
-
-              static var neonAPIKey: String {
-                  guard let url = URLComponents(string: neonConnectionString.replacingOccurrences(of: "postgresql://", with: "https://")) else { return "" }
-                  return url.password ?? ""
-              }
-
+              static let neonBaseURL = "${NEON_BASE_URL}"
+              static let neonAPIKey = "${NEON_API_KEY}"
               static let urlSessionTimeout: TimeInterval = 8
               static let bleReconnectInterval: TimeInterval = 30
               static let obdCommandTimeout: TimeInterval = 5
               static let maxRetryCount = 10
           }
-          SWIFTEOF
-          # Now substitute the actual env var value
-          sed -i '' "s|\$NEON_CONNECTION_STRING|${NEON_CONNECTION_STRING}|g" AutoLog/App/Config.swift
+          EOF
+          echo "Config.swift generated with base URL: ${NEON_BASE_URL}"
 
       - name: Install XcodeGen
         script: |
