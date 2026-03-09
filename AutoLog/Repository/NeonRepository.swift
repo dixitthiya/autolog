@@ -119,7 +119,7 @@ actor NeonRepository {
 
     private func seedThresholds() async throws {
         let rows = try await execute("SELECT COUNT(*) as cnt FROM service_thresholds")
-        let count = (rows.first?["cnt"] as? Int) ?? (rows.first?["cnt"] as? Double).map { Int($0) } ?? 0
+        let count = parseInt(rows.first?["cnt"]) ?? 0
         guard count == 0 else {
             Log.db("thresholds already seeded (\(count) rows)")
             return
@@ -253,15 +253,15 @@ actor NeonRepository {
     func getThresholds() async throws -> [ServiceThreshold] {
         let rows = try await execute("SELECT * FROM service_thresholds")
         return rows.compactMap { row in
-            guard let serviceType = row["service_type"] as? String else { return nil }
+            guard let serviceType = parseString(row["service_type"]) else { return nil }
             return ServiceThreshold(
                 serviceType: serviceType,
-                milesCritical: row["miles_critical"] as? Double,
-                milesWarning: row["miles_warning"] as? Double,
-                daysCritical: (row["days_critical"] as? Double).map { Int($0) } ?? row["days_critical"] as? Int,
-                daysWarning: (row["days_warning"] as? Double).map { Int($0) } ?? row["days_warning"] as? Int,
-                rotorCritical: row["rotor_critical"] as? Double,
-                rotorWarning: row["rotor_warning"] as? Double
+                milesCritical: parseDouble(row["miles_critical"]),
+                milesWarning: parseDouble(row["miles_warning"]),
+                daysCritical: parseInt(row["days_critical"]),
+                daysWarning: parseInt(row["days_warning"]),
+                rotorCritical: parseDouble(row["rotor_critical"]),
+                rotorWarning: parseDouble(row["rotor_warning"])
             )
         }
     }
@@ -310,19 +310,53 @@ actor NeonRepository {
 
     // MARK: - Parsing Helpers
 
+    private func parseDouble(_ value: Any?) -> Double? {
+        if let d = value as? Double { return d }
+        if let n = value as? NSNumber { return n.doubleValue }
+        if let s = value as? String { return Double(s) }
+        return nil
+    }
+
+    private func parseInt(_ value: Any?) -> Int? {
+        if let i = value as? Int { return i }
+        if let n = value as? NSNumber { return n.intValue }
+        if let s = value as? String { return Int(s) }
+        if let d = value as? Double { return Int(d) }
+        return nil
+    }
+
+    private func parseString(_ value: Any?) -> String? {
+        if let s = value as? String { return s }
+        if let n = value as? NSNumber { return n.stringValue }
+        return nil
+    }
+
+    private func parseBool(_ value: Any?) -> Bool {
+        if let b = value as? Bool { return b }
+        if let s = value as? String { return s == "true" || s == "t" }
+        if let n = value as? NSNumber { return n.boolValue }
+        return false
+    }
+
     private func parseMileageRecord(_ row: [String: Any]) -> MileageRecord? {
-        guard let id = row["id"] as? String,
-              let odometer = row["odometer_miles"] as? Double,
-              let source = row["source"] as? String else { return nil }
+        guard let id = parseString(row["id"]),
+              let odometer = parseDouble(row["odometer_miles"]),
+              let source = parseString(row["source"]) else {
+            Log.db("failed to parse mileage record: \(row)")
+            return nil
+        }
         let timestamp = parseDate(row["timestamp"]) ?? Date()
         return MileageRecord(id: id, timestamp: timestamp, odometerMiles: odometer, source: source)
     }
 
     private func parseServiceRecord(_ row: [String: Any]) -> ServiceRecord? {
-        guard let id = row["id"] as? String,
-              let serviceType = row["service_type"] as? String,
-              let category = row["category"] as? String,
-              let odometer = row["odometer_miles"] as? Double else { return nil }
+        guard let id = parseString(row["id"]),
+              let serviceType = parseString(row["service_type"]),
+              let category = parseString(row["category"]),
+              let odometer = parseDouble(row["odometer_miles"]) else {
+            Log.db("failed to parse service record: \(row)")
+            return nil
+        }
         let timestamp = parseDate(row["timestamp"]) ?? Date()
         return ServiceRecord(
             id: id,
@@ -330,10 +364,10 @@ actor NeonRepository {
             serviceType: serviceType,
             category: category,
             odometerMiles: odometer,
-            rotorThicknessMM: row["rotor_thickness_mm"] as? Double,
-            amount: row["amount"] as? Double,
-            comments: row["comments"] as? String,
-            manuallyEdited: (row["manually_edited"] as? Bool) ?? false
+            rotorThicknessMM: parseDouble(row["rotor_thickness_mm"]),
+            amount: parseDouble(row["amount"]),
+            comments: parseString(row["comments"]),
+            manuallyEdited: parseBool(row["manually_edited"])
         )
     }
 
@@ -342,7 +376,14 @@ actor NeonRepository {
         if let d = dateFormatter.date(from: str) { return d }
         let fallback = ISO8601DateFormatter()
         fallback.formatOptions = [.withInternetDateTime]
-        return fallback.date(from: str)
+        if let d = fallback.date(from: str) { return d }
+        // Handle Postgres timestamp format: "2025-12-13 19:08:54+00"
+        let pgFormatter = DateFormatter()
+        pgFormatter.dateFormat = "yyyy-MM-dd HH:mm:ssxx"
+        pgFormatter.locale = Locale(identifier: "en_US_POSIX")
+        if let d = pgFormatter.date(from: str) { return d }
+        pgFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSSSSxx"
+        return pgFormatter.date(from: str)
     }
 }
 
