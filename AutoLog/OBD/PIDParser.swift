@@ -35,6 +35,22 @@ struct PIDParser {
         return Int(bytes[0])
     }
 
+    /// Parse PID 0131 (distance since codes cleared, in km)
+    /// Response: 41 31 XX YY → distance_km = (XX * 256 + YY), convert to miles
+    static func parseDistanceSinceCodesCleared(_ response: String) -> Double {
+        let bytes = extractBytes(from: response, expectedPrefix: "41 31")
+        guard bytes.count >= 2 else {
+            if response.contains("NO DATA") || response.contains("ERROR") {
+                Log.obd("distance since codes cleared PID not supported")
+            }
+            return 0
+        }
+        let km = Double(Int(bytes[0]) * 256 + Int(bytes[1]))
+        let miles = km * 0.621371
+        Log.obd("distance since codes cleared: \(Int(miles)) miles")
+        return miles
+    }
+
     /// Calculate accumulated distance from speed readings
     static func accumulateDistance(speedKPH: Int, deltaTimeHours: Double) -> Double {
         let distanceKM = Double(speedKPH) * deltaTimeHours

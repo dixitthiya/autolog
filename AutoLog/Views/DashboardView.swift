@@ -109,7 +109,19 @@ struct DashboardView: View {
             if !mileageService.obdStatus.isEmpty {
                 Text(mileageService.obdStatus)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(mileageService.needsManualEntry ? .orange : .secondary)
+            }
+            if mileageService.needsManualEntry {
+                NavigationLink {
+                    EditMileageView(record: nil) {
+                        mileageService.needsManualEntry = false
+                        await loadDashboard()
+                    }
+                } label: {
+                    Label("Enter Odometer Reading", systemImage: "pencil.circle.fill")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.orange)
+                }
             }
         } header: {
             Text("OBD Connection")

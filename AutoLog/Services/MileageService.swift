@@ -9,10 +9,9 @@ class MileageService: ObservableObject {
     @Published var currentMileage: Double = 0
     @Published var isReading = false
     @Published var obdStatus: String = ""
+    @Published var needsManualEntry = false
 
     private var obdService: OBDCommandService?
-    private var speedAccumulator: Double = 0
-    private var lastSpeedReadTime: Date?
 
     private init() {}
 
@@ -93,25 +92,32 @@ class MileageService: ObservableObject {
                 Log.obd("01A6 failed, trying speed accumulation fallback")
             }
 
-            // Fallback: speed accumulation
+            // Read distance since codes cleared (PID 0131)
+            obdStatus = "Reading distance since codes cleared..."
+            var distSinceCleared: Double?
+            do {
+                let distRaw = try await obd.sendCommand("0131")
+                let distMiles = PIDParser.parseDistanceSinceCodesCleared(distRaw)
+                distSinceCleared = distMiles > 0 ? distMiles : nil
+                await NeonRepository.shared.logOBDEvent(
+                    eventType: "dist_since_clear", pid: "0131", rawResponse: distRaw,
+                    parsedValue: distMiles, success: distMiles > 0,
+                    errorMessage: distMiles == 0 ? "Parse failed or zero" : nil)
+            } catch {
+                await NeonRepository.shared.logOBDEvent(
+                    eventType: "dist_since_clear", pid: "0131", rawResponse: nil,
+                    parsedValue: nil, success: false,
+                    errorMessage: error.localizedDescription)
+            }
+
+            // Calculate mileage: manual entry > reference + delta from 0131
             if odometer == 0 {
-                obdStatus = "Accumulating speed data (60s)..."
-                do {
-                    odometer = try await accumulateFromSpeed(obd: obd)
-                    await NeonRepository.shared.logOBDEvent(
-                        eventType: "speed_fallback", pid: "010D", rawResponse: nil,
-                        parsedValue: odometer, success: odometer > 0,
-                        errorMessage: odometer == 0 ? "Zero accumulation" : nil)
-                } catch {
-                    await NeonRepository.shared.logOBDEvent(
-                        eventType: "speed_fallback", pid: "010D", rawResponse: nil,
-                        parsedValue: nil, success: false,
-                        errorMessage: error.localizedDescription)
-                }
+                odometer = try await calculateMileage(currentDistSinceCleared: distSinceCleared)
             }
 
             guard odometer > 0 else {
-                obdStatus = "Could not read mileage"
+                obdStatus = "No mileage data — enter manually"
+                needsManualEntry = true
                 Log.obd("could not determine odometer")
                 return
             }
@@ -119,7 +125,7 @@ class MileageService: ObservableObject {
             // Check if today's record exists
             let todayRecord = try await NeonRepository.shared.getTodayMileageRecord()
             if todayRecord == nil {
-                let record = MileageRecord.bleAuto(odometer: odometer)
+                let record = MileageRecord.bleAuto(odometer: odometer, distSinceCodesCleared: distSinceCleared)
                 do {
                     try await NeonRepository.shared.saveMileageRecord(record)
                     Log.db("mileage record saved: \(Int(odometer)) miles")
@@ -159,46 +165,54 @@ class MileageService: ObservableObject {
         }
     }
 
-    private func accumulateFromSpeed(obd: OBDCommandService) async throws -> Double {
-        let latest = try await NeonRepository.shared.getLatestMileageRecord()
-        guard let baseOdometer = latest?.odometerMiles else {
+    /// Calculate current mileage using: manual entry (priority 1) > reference + delta from 0131
+    private func calculateMileage(currentDistSinceCleared: Double?) async throws -> Double {
+        // Find the latest manual entry as reference point
+        let manualRef = try await NeonRepository.shared.getLatestManualMileageRecord()
+
+        // If no manual entry exists, can't calculate — need manual entry
+        guard let ref = manualRef else {
+            Log.obd("no manual reference entry exists")
+            needsManualEntry = true
+            obdStatus = "Enter odometer manually to start tracking"
+            // Fall back to latest record of any type
+            let latest = try await NeonRepository.shared.getLatestMileageRecord()
+            return latest?.odometerMiles ?? 0
+        }
+
+        // If we have a 0131 reading, calculate delta from reference
+        guard let currentDist = currentDistSinceCleared else {
+            // No 0131 reading — use reference odometer as-is
+            obdStatus = "Using manual entry: \(Int(ref.odometerMiles)) mi"
+            return ref.odometerMiles
+        }
+
+        guard let refDist = ref.distSinceCodesCleared else {
+            // Reference was entered without OBD — no baseline to calculate delta
+            // Prompt user to confirm odometer while OBD is connected
+            needsManualEntry = true
+            obdStatus = "Confirm odometer now to enable auto-tracking"
+            return ref.odometerMiles
+        }
+
+        let delta = currentDist - refDist
+
+        // Detect negative delta = codes were cleared (counter reset)
+        if delta < 0 {
+            Log.obd("codes cleared detected! delta=\(Int(delta)), current=\(Int(currentDist)), ref=\(Int(refDist))")
+            needsManualEntry = true
+            obdStatus = "Codes cleared — enter new odometer reading"
             await NeonRepository.shared.logOBDEvent(
-                eventType: "speed_fallback", pid: "010D", rawResponse: nil,
-                parsedValue: nil, success: false,
-                errorMessage: "No base odometer record exists for speed accumulation")
-            throw OBDError.notSupported
+                eventType: "codes_cleared_detected", pid: "0131", rawResponse: nil,
+                parsedValue: currentDist, success: false,
+                errorMessage: "Negative delta: current=\(Int(currentDist)) ref=\(Int(refDist))")
+            return ref.odometerMiles // Don't go backwards
         }
 
-        speedAccumulator = 0
-        lastSpeedReadTime = Date()
-        var failedReads = 0
-
-        for i in 0..<60 {
-            do {
-                let speedRaw = try await obd.sendCommand("010D")
-                let speed = PIDParser.parseSpeed(speedRaw)
-                let now = Date()
-                if let lastTime = lastSpeedReadTime {
-                    let deltaHours = now.timeIntervalSince(lastTime) / 3600
-                    speedAccumulator += PIDParser.accumulateDistance(speedKPH: speed, deltaTimeHours: deltaHours)
-                }
-                lastSpeedReadTime = now
-            } catch {
-                failedReads += 1
-                Log.obd("speed read \(i) failed: \(error.localizedDescription)")
-            }
-            try await Task.sleep(nanoseconds: 1_000_000_000)
-        }
-
-        if failedReads > 0 {
-            await NeonRepository.shared.logOBDEvent(
-                eventType: "speed_reads", pid: "010D", rawResponse: nil,
-                parsedValue: speedAccumulator,
-                success: failedReads < 30,
-                errorMessage: "\(failedReads)/60 speed reads failed")
-        }
-
-        return baseOdometer + speedAccumulator
+        let calculated = ref.odometerMiles + delta
+        obdStatus = "Calculated: \(Int(calculated)) mi (+\(Int(delta)) since ref)"
+        Log.obd("calculated mileage: \(Int(ref.odometerMiles)) + \(Int(delta)) = \(Int(calculated))")
+        return calculated
     }
 
     private func checkStatusNotifications() async {

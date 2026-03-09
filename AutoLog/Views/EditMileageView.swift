@@ -3,6 +3,7 @@ import SwiftUI
 struct EditMileageView: View {
     let record: MileageRecord?
     let onSave: () async -> Void
+    @StateObject private var bleManager = BLEManager.shared
 
     @Environment(\.dismiss) private var dismiss
 
@@ -11,6 +12,7 @@ struct EditMileageView: View {
     @State private var showDeleteConfirm = false
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var hasOBDBaseline = false
 
     init(record: MileageRecord?, onSave: @escaping () async -> Void) {
         self.record = record
@@ -30,12 +32,31 @@ struct EditMileageView: View {
                         .keyboardType(.numberPad)
                 }
 
+                if !isEditing {
+                    Section {
+                        if hasOBDBaseline {
+                            Label("OBD baseline available — auto-tracking will be enabled", systemImage: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        } else {
+                            Label("Connect to OBD before saving to enable auto-tracking", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+
                 if isEditing {
                     Section {
                         Button("Delete Record", role: .destructive) {
                             showDeleteConfirm = true
                         }
                     }
+                }
+            }
+            .task {
+                if !isEditing {
+                    hasOBDBaseline = await getLatestDistSinceCleared() != nil
                 }
             }
             .navigationTitle(isEditing ? "Edit Mileage" : "Add Mileage")
@@ -77,11 +98,14 @@ struct EditMileageView: View {
                     id: existing.id,
                     timestamp: date,
                     odometerMiles: odometer,
-                    source: existing.source
+                    source: existing.source,
+                    distSinceCodesCleared: existing.distSinceCodesCleared
                 )
                 try await NeonRepository.shared.updateMileageRecord(updated)
             } else {
-                let newRecord = MileageRecord.manual(odometer: odometer, date: date)
+                // Capture latest 0131 reading as baseline for this manual entry
+                let latestDist = await getLatestDistSinceCleared()
+                let newRecord = MileageRecord.manual(odometer: odometer, date: date, distSinceCodesCleared: latestDist)
                 try await NeonRepository.shared.saveMileageRecord(newRecord)
             }
             await onSave()
@@ -95,6 +119,17 @@ struct EditMileageView: View {
             }
         }
         isSaving = false
+    }
+
+    /// Get the latest dist_since_codes_cleared from OBD logs or recent mileage records
+    private func getLatestDistSinceCleared() async -> Double? {
+        // Check if there's a recent OBD reading with 0131 value
+        do {
+            let rows = try await NeonRepository.shared.getOBDDistSinceCleared()
+            return rows
+        } catch {
+            return nil
+        }
     }
 
     private func delete() async {

@@ -77,6 +77,11 @@ actor OBDCommandService {
         let response = try await sendCommand("010D")
         return PIDParser.parseSpeed(response)
     }
+
+    func getDistanceSinceCodesCleared() async throws -> Double {
+        let response = try await sendCommand("0131")
+        return PIDParser.parseDistanceSinceCodesCleared(response)
+    }
 }
 
 enum OBDError: LocalizedError {

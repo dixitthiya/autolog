@@ -98,8 +98,14 @@ actor NeonRepository {
                 timestamp TIMESTAMPTZ NOT NULL,
                 odometer_miles DOUBLE PRECISION NOT NULL,
                 source TEXT NOT NULL,
+                dist_since_codes_cleared DOUBLE PRECISION,
                 synced_at TIMESTAMPTZ DEFAULT now()
             )
+        """)
+
+        // Add column if table already exists without it
+        try await executeNoResult("""
+            ALTER TABLE mileage_records ADD COLUMN IF NOT EXISTS dist_since_codes_cleared DOUBLE PRECISION
         """)
 
         try await executeNoResult("""
@@ -193,22 +199,22 @@ actor NeonRepository {
     func saveMileageRecord(_ record: MileageRecord) async throws {
         Log.db("saving mileage record")
         try await executeNoResult("""
-            INSERT INTO mileage_records (id, timestamp, odometer_miles, source)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO mileage_records (id, timestamp, odometer_miles, source, dist_since_codes_cleared)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (id) DO NOTHING
-        """, params: [record.id, record.timestamp, record.odometerMiles, record.source])
+        """, params: [record.id, record.timestamp, record.odometerMiles, record.source, record.distSinceCodesCleared as Any])
         Log.db("record saved")
     }
 
     func getMileageRecords() async throws -> [MileageRecord] {
-        let rows = try await execute("SELECT id, timestamp, odometer_miles, source FROM mileage_records ORDER BY timestamp DESC")
+        let rows = try await execute("SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records ORDER BY timestamp DESC")
         return rows.compactMap { parseMileageRecord($0) }
     }
 
     func updateMileageRecord(_ record: MileageRecord) async throws {
         try await executeNoResult("""
-            UPDATE mileage_records SET timestamp = $2, odometer_miles = $3, source = $4 WHERE id = $1
-        """, params: [record.id, record.timestamp, record.odometerMiles, record.source])
+            UPDATE mileage_records SET timestamp = $2, odometer_miles = $3, source = $4, dist_since_codes_cleared = $5 WHERE id = $1
+        """, params: [record.id, record.timestamp, record.odometerMiles, record.source, record.distSinceCodesCleared as Any])
     }
 
     func deleteMileageRecord(id: String) async throws {
@@ -217,7 +223,7 @@ actor NeonRepository {
 
     func getTodayMileageRecord() async throws -> MileageRecord? {
         let rows = try await execute("""
-            SELECT id, timestamp, odometer_miles, source FROM mileage_records
+            SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records
             WHERE DATE(timestamp) = CURRENT_DATE ORDER BY timestamp DESC LIMIT 1
         """)
         return rows.first.flatMap { parseMileageRecord($0) }
@@ -225,8 +231,17 @@ actor NeonRepository {
 
     func getLatestMileageRecord() async throws -> MileageRecord? {
         let rows = try await execute("""
-            SELECT id, timestamp, odometer_miles, source FROM mileage_records
+            SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records
             ORDER BY timestamp DESC LIMIT 1
+        """)
+        return rows.first.flatMap { parseMileageRecord($0) }
+    }
+
+    /// Get the latest MANUAL entry — this is the reference point for mileage calculation
+    func getLatestManualMileageRecord() async throws -> MileageRecord? {
+        let rows = try await execute("""
+            SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records
+            WHERE source = 'MANUAL' ORDER BY timestamp DESC LIMIT 1
         """)
         return rows.first.flatMap { parseMileageRecord($0) }
     }
@@ -292,6 +307,16 @@ actor NeonRepository {
         } catch {
             Log.db("failed to log OBD event: \(error.localizedDescription)")
         }
+    }
+
+    /// Get the latest dist_since_codes_cleared value from OBD logs
+    func getOBDDistSinceCleared() async throws -> Double? {
+        let rows = try await execute("""
+            SELECT parsed_value FROM obd_connection_logs
+            WHERE event_type = 'dist_since_clear' AND success = true
+            ORDER BY timestamp DESC LIMIT 1
+        """)
+        return parseDouble(rows.first?["parsed_value"])
     }
 
     func getOBDFailureCount() async throws -> (total: Int, days: Int) {
@@ -482,7 +507,8 @@ actor NeonRepository {
             return nil
         }
         let timestamp = parseDate(row["timestamp"]) ?? Date()
-        return MileageRecord(id: id, timestamp: timestamp, odometerMiles: odometer, source: source)
+        let distSinceCodesCleared = parseDouble(row["dist_since_codes_cleared"])
+        return MileageRecord(id: id, timestamp: timestamp, odometerMiles: odometer, source: source, distSinceCodesCleared: distSinceCodesCleared)
     }
 
     private func parseServiceRecord(_ row: [String: Any]) -> ServiceRecord? {
