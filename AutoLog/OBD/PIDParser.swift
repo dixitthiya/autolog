@@ -42,6 +42,7 @@ struct PIDParser {
     }
 
     /// Extract hex bytes from OBD response after the expected prefix
+    /// Handles responses like "SEARCHING...410C0CF8" where prefix appears mid-string
     static func extractBytes(from response: String, expectedPrefix: String) -> [UInt8] {
         let cleaned = response
             .replacingOccurrences(of: "\r", with: " ")
@@ -51,9 +52,10 @@ struct PIDParser {
         let prefixNormalized = expectedPrefix.replacingOccurrences(of: " ", with: "").uppercased()
         let responseNormalized = cleaned.replacingOccurrences(of: " ", with: "").uppercased()
 
-        guard responseNormalized.hasPrefix(prefixNormalized) else { return [] }
+        // Find the prefix anywhere in the response (not just at start)
+        guard let range = responseNormalized.range(of: prefixNormalized) else { return [] }
 
-        let afterPrefix = String(responseNormalized.dropFirst(prefixNormalized.count))
+        let afterPrefix = String(responseNormalized[range.upperBound...])
         var bytes: [UInt8] = []
         var i = afterPrefix.startIndex
         while i < afterPrefix.endIndex {
@@ -61,6 +63,8 @@ struct PIDParser {
             let hex = String(afterPrefix[i..<next])
             if let byte = UInt8(hex, radix: 16) {
                 bytes.append(byte)
+            } else {
+                break // Stop at non-hex characters
             }
             i = next
         }

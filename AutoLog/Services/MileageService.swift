@@ -41,19 +41,26 @@ class MileageService: ObservableObject {
 
         do {
             obdStatus = "Checking engine..."
-            let rpmRaw = try await obd.sendCommand("010C")
-            let rpm = PIDParser.parseRPM(rpmRaw)
+            var rpm = 0
+            do {
+                let rpmRaw = try await obd.sendCommand("010C")
+                rpm = PIDParser.parseRPM(rpmRaw)
+                await NeonRepository.shared.logOBDEvent(
+                    eventType: "rpm_check", pid: "010C", rawResponse: rpmRaw,
+                    parsedValue: Double(rpm), success: rpm > 0,
+                    errorMessage: rpm == 0 ? "RPM=0 (engine off or parse failed)" : nil)
+            } catch {
+                await NeonRepository.shared.logOBDEvent(
+                    eventType: "rpm_check", pid: "010C", rawResponse: nil,
+                    parsedValue: nil, success: false,
+                    errorMessage: error.localizedDescription)
+                Log.obd("RPM check failed: \(error.localizedDescription)")
+            }
 
-            await NeonRepository.shared.logOBDEvent(
-                eventType: "rpm_check", pid: "010C", rawResponse: rpmRaw,
-                parsedValue: Double(rpm), success: rpm > 0,
-                errorMessage: rpm == 0 ? "Engine not running or parse failed" : nil)
-
-            guard rpm > 0 else {
-                obdStatus = "Engine not running"
-                Log.obd("engine not running (RPM=0), skipping")
-                bleManager.disconnect()
-                return
+            // Continue even if RPM=0 — still try to read odometer
+            if rpm == 0 {
+                obdStatus = "RPM unavailable, trying odometer anyway..."
+                Log.obd("RPM=0 or failed, continuing to odometer read")
             }
 
             var odometer: Double = 0

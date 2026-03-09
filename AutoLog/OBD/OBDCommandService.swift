@@ -9,12 +9,22 @@ actor OBDCommandService {
     }
 
     func initialize() async throws {
-        let initCommands = ["ATZ", "ATE0", "ATL0", "ATH0", "ATS0", "ATSP0"]
+        // ATZ resets, wait a bit for adapter to be ready
+        _ = try await sendCommand("ATZ")
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+
+        let initCommands = [
+            "ATE0",   // Echo off
+            "ATL0",   // Linefeeds off
+            "ATH0",   // Headers off
+            "ATS0",   // Spaces off
+            "ATSP6",  // Force ISO 15765-4 CAN (11-bit, 500kbaud) — matches user's vehicle
+        ]
         for cmd in initCommands {
             _ = try await sendCommand(cmd)
         }
         isInitialized = true
-        Log.obd("ELM327 initialized")
+        Log.obd("ELM327 initialized with CAN protocol")
     }
 
     func sendCommand(_ command: String) async throws -> String {
