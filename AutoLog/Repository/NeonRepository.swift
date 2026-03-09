@@ -129,6 +129,19 @@ actor NeonRepository {
             )
         """)
 
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS obd_connection_logs (
+                id TEXT PRIMARY KEY,
+                timestamp TIMESTAMPTZ NOT NULL,
+                event_type TEXT NOT NULL,
+                pid TEXT,
+                raw_response TEXT,
+                parsed_value DOUBLE PRECISION,
+                success BOOLEAN NOT NULL,
+                error_message TEXT
+            )
+        """)
+
         Log.db("schema initialized")
         try await seedThresholds()
     }
@@ -262,6 +275,34 @@ actor NeonRepository {
 
     func deleteServiceRecord(id: String) async throws {
         try await executeNoResult("DELETE FROM service_records WHERE id = $1", params: [id])
+    }
+
+    // MARK: - OBD Connection Logs
+
+    func logOBDEvent(eventType: String, pid: String?, rawResponse: String?, parsedValue: Double?, success: Bool, errorMessage: String?) async {
+        do {
+            try await executeNoResult("""
+                INSERT INTO obd_connection_logs (id, timestamp, event_type, pid, raw_response, parsed_value, success, error_message)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """, params: [
+                UUID().uuidString, Date(), eventType,
+                pid as Any, rawResponse as Any, parsedValue as Any,
+                success, errorMessage as Any
+            ])
+        } catch {
+            Log.db("failed to log OBD event: \(error.localizedDescription)")
+        }
+    }
+
+    func getOBDFailureCount() async throws -> (total: Int, days: Int) {
+        let rows = try await execute("""
+            SELECT COUNT(*) as total_failures,
+                   COUNT(DISTINCT DATE(timestamp)) as failure_days
+            FROM obd_connection_logs WHERE success = false
+        """)
+        let total = parseInt(rows.first?["total_failures"]) ?? 0
+        let days = parseInt(rows.first?["failure_days"]) ?? 0
+        return (total, days)
     }
 
     // MARK: - Diagnostics

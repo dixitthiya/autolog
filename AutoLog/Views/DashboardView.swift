@@ -100,11 +100,16 @@ struct DashboardView: View {
                         .foregroundStyle(bleManager.connectionState == .ready ? .green : .blue)
                     Text(bleManager.connectionState.displayText)
                     Spacer()
-                    if bleManager.connectionState == .scanning || bleManager.connectionState == .connecting {
+                    if bleManager.connectionState == .scanning || bleManager.connectionState == .connecting || mileageService.isReading {
                         ProgressView()
                             .controlSize(.small)
                     }
                 }
+            }
+            if !mileageService.obdStatus.isEmpty {
+                Text(mileageService.obdStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("OBD Connection")
