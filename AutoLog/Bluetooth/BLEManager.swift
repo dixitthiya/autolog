@@ -46,10 +46,29 @@ class BLEManager: NSObject, ObservableObject {
     private var dataContinuation: AsyncStream<Data>.Continuation?
     private(set) var dataStream: AsyncStream<Data>!
 
-    private let targetName = "Vgate iCar Pro"
-    private let serviceUUID = CBUUID(string: "FFF0")
-    private let writeUUID = CBUUID(string: "FFF2")
-    private let notifyUUID = CBUUID(string: "FFF1")
+    // Common ELM327/OBD adapter BLE names
+    private let knownNames = [
+        "Vgate", "iCar", "ELM327", "OBD", "OBDII", "OBD2",
+        "V-LINK", "Vlink", "IOS-Vlink", "VEEPEAK", "LELink",
+        "Carista", "Konnwei", "Elm", "AutoScan", "Scan Tool", "BT-OBD"
+    ]
+
+    // Common ELM327 service/characteristic UUIDs across adapters
+    private let knownServiceUUIDs = [
+        CBUUID(string: "FFF0"),           // Vgate, many Chinese adapters
+        CBUUID(string: "FFE0"),           // Some ELM327 clones
+        CBUUID(string: "E7810A71-73AE-499D-8C15-FAA9AEF0C3F2"), // LELink
+        CBUUID(string: "18F0"),           // Some OBD adapters
+        CBUUID(string: "0000FFF0-0000-1000-8000-00805F9B34FB"), // Full FFF0
+    ]
+    private let knownWriteUUIDs = [
+        CBUUID(string: "FFF2"), CBUUID(string: "FFE1"),
+        CBUUID(string: "BEF8D6C9-9C21-4C9E-B632-BD58C1009F9F"),
+    ]
+    private let knownNotifyUUIDs = [
+        CBUUID(string: "FFF1"), CBUUID(string: "FFE1"),
+        CBUUID(string: "BEF8D6C9-9C21-4C9E-B632-BD58C1009F9F"),
+    ]
 
     override init() {
         super.init()
@@ -93,7 +112,8 @@ class BLEManager: NSObject, ObservableObject {
         guard let characteristic = writeCharacteristic,
               let peripheral = peripheral,
               let data = "\(command)\r".data(using: .ascii) else { return }
-        peripheral.writeValue(data, for: characteristic, type: .withResponse)
+        let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.write) ? .withResponse : .withoutResponse
+        peripheral.writeValue(data, for: characteristic, type: writeType)
         Log.obd("sending: \(command)")
     }
 
@@ -118,9 +138,11 @@ extension BLEManager: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                                      advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        guard let name = peripheral.name, name.contains(targetName) else { return }
+        let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? ""
+        let upperName = name.uppercased()
+        guard !name.isEmpty, knownNames.contains(where: { upperName.contains($0.uppercased()) }) else { return }
         Task { @MainActor in
-            Log.ble("found \(name)")
+            Log.ble("found OBD adapter: \(name)")
             self.peripheral = peripheral
             peripheral.delegate = self
             centralManager.stopScan()
@@ -133,7 +155,8 @@ extension BLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             Log.ble("connected to \(peripheral.name ?? "device")")
             connectionState = .connected
-            peripheral.discoverServices([serviceUUID])
+            // Discover all services — different adapters use different UUIDs
+            peripheral.discoverServices(nil)
         }
     }
 
@@ -171,18 +194,40 @@ extension BLEManager: CBCentralManagerDelegate {
 
 extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let service = peripheral.services?.first(where: { $0.uuid == serviceUUID }) else { return }
-        peripheral.discoverCharacteristics([writeUUID, notifyUUID], for: service)
+        guard let services = peripheral.services else { return }
+        Task { @MainActor in
+            Log.ble("discovered \(services.count) services: \(services.map { $0.uuid.uuidString })")
+        }
+        // Try known service UUIDs first, then discover characteristics on all services
+        for service in services {
+            peripheral.discoverCharacteristics(nil, for: service)
+        }
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         Task { @MainActor in
-            for char in service.characteristics ?? [] {
-                if char.uuid == writeUUID {
-                    writeCharacteristic = char
-                } else if char.uuid == notifyUUID {
-                    notifyCharacteristic = char
-                    peripheral.setNotifyValue(true, for: char)
+            let chars = service.characteristics ?? []
+            Log.ble("service \(service.uuid): \(chars.map { "\($0.uuid)(\($0.properties.rawValue))" })")
+
+            for char in chars {
+                // Match write characteristic: known UUID or has .write/.writeWithoutResponse property
+                if writeCharacteristic == nil {
+                    if knownWriteUUIDs.contains(char.uuid) ||
+                       (char.properties.contains(.write) || char.properties.contains(.writeWithoutResponse)) &&
+                       knownServiceUUIDs.contains(service.uuid) {
+                        writeCharacteristic = char
+                        Log.ble("using write characteristic: \(char.uuid)")
+                    }
+                }
+
+                // Match notify characteristic: known UUID or has .notify property
+                if notifyCharacteristic == nil {
+                    if knownNotifyUUIDs.contains(char.uuid) ||
+                       char.properties.contains(.notify) && knownServiceUUIDs.contains(service.uuid) {
+                        notifyCharacteristic = char
+                        peripheral.setNotifyValue(true, for: char)
+                        Log.ble("using notify characteristic: \(char.uuid)")
+                    }
                 }
             }
 
