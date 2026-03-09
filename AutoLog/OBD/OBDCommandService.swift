@@ -22,7 +22,9 @@ actor OBDCommandService {
             bleManager.send(command)
         }
 
-        let stream = await MainActor.run { bleManager.dataStream! }
+        guard let stream = await MainActor.run(body: { bleManager.dataStream }) else {
+            throw OBDError.noResponse
+        }
 
         return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
@@ -43,7 +45,9 @@ actor OBDCommandService {
                 throw OBDError.timeout
             }
 
-            let result = try await group.next()!
+            guard let result = try await group.next() else {
+                throw OBDError.noResponse
+            }
             group.cancelAll()
             return result
         }

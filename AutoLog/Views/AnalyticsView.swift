@@ -41,16 +41,16 @@ struct AnalyticsView: View {
 
     private var frontRotorData: [(Date, Double)] {
         serviceRecords
-            .filter { $0.serviceType == "Front Rotor Thickness Reading" && $0.rotorThicknessMM != nil }
+            .filter { $0.serviceType == "Front Rotor Thickness Reading" }
             .sorted { $0.timestamp < $1.timestamp }
-            .map { ($0.timestamp, $0.rotorThicknessMM!) }
+            .compactMap { r in r.rotorThicknessMM.map { (r.timestamp, $0) } }
     }
 
     private var rearRotorData: [(Date, Double)] {
         serviceRecords
-            .filter { $0.serviceType == "Rear Rotor Thickness Reading" && $0.rotorThicknessMM != nil }
+            .filter { $0.serviceType == "Rear Rotor Thickness Reading" }
             .sorted { $0.timestamp < $1.timestamp }
-            .map { ($0.timestamp, $0.rotorThicknessMM!) }
+            .compactMap { r in r.rotorThicknessMM.map { (r.timestamp, $0) } }
     }
 
     private var frontThreshold: ServiceThreshold? {
@@ -116,16 +116,14 @@ struct AnalyticsView: View {
     }
 
     private func projectRotorWear(data: [(Date, Double)]) -> (Date, Double, Date, Double)? {
-        guard data.count >= 2 else { return nil }
-        let first = data.first!
-        let last = data.last!
+        guard let first = data.first, let last = data.last, data.count >= 2 else { return nil }
         let daysDiff = last.0.timeIntervalSince(first.0) / 86400
         guard daysDiff > 0 else { return nil }
         let rate = (first.1 - last.1) / daysDiff
         guard rate > 0 else { return nil }
         let daysAhead = 365.0
         let projected = last.1 - (rate * daysAhead)
-        let futureDate = Calendar.current.date(byAdding: .day, value: Int(daysAhead), to: last.0)!
+        guard let futureDate = Calendar.current.date(byAdding: .day, value: Int(daysAhead), to: last.0) else { return nil }
         return (last.0, last.1, futureDate, max(0, projected))
     }
 
@@ -175,13 +173,17 @@ struct AnalyticsView: View {
     // MARK: - Spend Over Time
 
     private var spendData: [(Date, Double)] {
-        let withAmount = serviceRecords.filter { $0.amount != nil && $0.amount! > 0 }
-            .sorted { $0.timestamp < $1.timestamp }
+        let withAmount = serviceRecords
+            .compactMap { r -> (Date, Double)? in
+                guard let amount = r.amount, amount > 0 else { return nil }
+                return (r.timestamp, amount)
+            }
+            .sorted { $0.0 < $1.0 }
 
         var cumulative = 0.0
-        return withAmount.map { record in
-            cumulative += record.amount!
-            return (record.timestamp, cumulative)
+        return withAmount.map { item in
+            cumulative += item.1
+            return (item.0, cumulative)
         }
     }
 
@@ -208,13 +210,9 @@ struct AnalyticsView: View {
     // MARK: - Projected Service Dates
 
     private var projectedServices: [(String, Date)] {
-        guard let currentMileage = mileageRecords.first?.odometerMiles else { return [] }
-
         let sorted = mileageRecords.sorted { $0.timestamp < $1.timestamp }
-        guard sorted.count >= 2 else { return [] }
-
-        let first = sorted.first!
-        let last = sorted.last!
+        guard sorted.count >= 2, let first = sorted.first, let last = sorted.last else { return [] }
+        let currentMileage = last.odometerMiles
         let days = last.timestamp.timeIntervalSince(first.timestamp) / 86400
         guard days > 30 else { return [] }
         let milesPerDay = (last.odometerMiles - first.odometerMiles) / days
