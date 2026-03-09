@@ -9,6 +9,7 @@ struct AnalyticsView: View {
     @State private var errorMessage: String?
     @State private var selectedMonth: String?
     @State private var selectedSpendDate: Date?
+    @State private var selectedRotorDate: Date?
 
     var body: some View {
         NavigationStack {
@@ -47,17 +48,30 @@ struct AnalyticsView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "MMM yy"
 
-        var result: [(String, Double)] = []
-        for i in 1..<sorted.count {
-            let prev = sorted[i-1]
-            let curr = sorted[i]
-            let diff = curr.odometerMiles - prev.odometerMiles
-            guard diff > 0 else { continue }
+        // Group records by calendar month, take min and max odometer per month
+        var monthlyRange: [String: (min: Double, max: Double)] = [:]
+        var monthOrder: [String] = []
+        for record in sorted {
+            let key = formatter.string(from: record.timestamp)
+            if var existing = monthlyRange[key] {
+                existing.min = min(existing.min, record.odometerMiles)
+                existing.max = max(existing.max, record.odometerMiles)
+                monthlyRange[key] = existing
+            } else {
+                monthlyRange[key] = (min: record.odometerMiles, max: record.odometerMiles)
+                monthOrder.append(key)
+            }
+        }
 
-            let months = max(1, cal.dateComponents([.month], from: prev.timestamp, to: curr.timestamp).month ?? 1)
-            let milesPerMonth = diff / Double(months)
-            let label = formatter.string(from: curr.timestamp)
-            result.append((label, milesPerMonth))
+        // Calculate miles driven per month using consecutive months
+        var result: [(String, Double)] = []
+        for i in 1..<monthOrder.count {
+            let prevKey = monthOrder[i - 1]
+            let currKey = monthOrder[i]
+            guard let prev = monthlyRange[prevKey], let curr = monthlyRange[currKey] else { continue }
+            let miles = curr.max - prev.min
+            guard miles > 0 else { continue }
+            result.append((currKey, miles))
         }
         return result
     }
@@ -73,42 +87,50 @@ struct AnalyticsView: View {
                 Text("Miles Per Month")
                     .font(.headline)
                 Spacer()
-                Text("Avg: \(Int(avgMonthlyMiles).formatted()) mi")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            // Selected month detail
-            if let selected = selectedMonth,
-               let data = monthlyMiles.first(where: { $0.0 == selected }) {
-                HStack {
-                    Text(data.0)
-                        .font(.subheadline.bold())
-                    Text("\(Int(data.1).formatted()) mi")
-                        .font(.subheadline)
+                if let selected = selectedMonth,
+                   let data = monthlyMiles.first(where: { $0.0 == selected }) {
+                    Text("\(data.0): \(Int(data.1).formatted()) mi")
+                        .font(.caption.bold())
                         .foregroundStyle(.blue)
+                } else {
+                    Text("Avg: \(Int(avgMonthlyMiles).formatted()) mi")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 2)
             }
 
             Chart {
                 ForEach(monthlyMiles, id: \.0) { item in
                     BarMark(x: .value("Month", item.0), y: .value("Miles", item.1))
-                        .foregroundStyle(item.0 == selectedMonth ? .blue : .blue.opacity(0.7))
+                        .foregroundStyle(item.0 == selectedMonth ? .blue : .blue.opacity(0.5))
+                        .cornerRadius(4)
+                    if item.0 == selectedMonth {
+                        BarMark(x: .value("Month", item.0), y: .value("Miles", item.1))
+                            .foregroundStyle(.clear)
+                            .annotation(position: .top) {
+                                Text("\(Int(item.1).formatted())")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.blue)
+                            }
+                    }
                 }
 
                 RuleMark(y: .value("Average", avgMonthlyMiles))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
                     .foregroundStyle(.orange)
                     .annotation(position: .top, alignment: .trailing) {
-                        Text("avg")
+                        Text("avg \(Int(avgMonthlyMiles).formatted())")
                             .font(.caption2)
                             .foregroundStyle(.orange)
                     }
             }
             .chartYAxisLabel("miles")
             .chartXSelection(value: $selectedMonth)
-            .frame(height: 200)
+            .frame(height: 220)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectedMonth = nil
+            }
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
@@ -179,12 +201,31 @@ struct AnalyticsView: View {
                         .interpolationMethod(.monotone)
                     PointMark(x: .value("Date", point.0), y: .value("$", point.1))
                         .foregroundStyle(.green)
-                        .symbolSize(30)
+                        .symbolSize(selectedSpendDate != nil && isClosestSpend(point.0) ? 80 : 30)
+                        .annotation(position: .top) {
+                            Text("$\(Int(point.1))")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                        }
+                }
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic) { value in
+                    AxisGridLine()
+                    AxisValueLabel {
+                        if let date = value.as(Date.self) {
+                            Text(date.formatted(.dateTime.month(.abbreviated).year(.twoDigits)))
+                        }
+                    }
                 }
             }
             .chartYAxisLabel("$")
             .chartXSelection(value: $selectedSpendDate)
             .frame(height: 200)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectedSpendDate = nil
+            }
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
@@ -217,41 +258,77 @@ struct AnalyticsView: View {
 
     private var rotorWearChart: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Rotor Wear")
-                .font(.headline)
-
-            // Current thickness summary
-            HStack(spacing: 16) {
-                if let latest = frontRotorData.last {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Front")
-                            .font(.caption2)
+            HStack {
+                Text("Rotor Wear")
+                    .font(.headline)
+                Spacer()
+                if let projected = projectRotorWear(data: frontRotorData),
+                   let crit = frontThreshold?.rotorCritical {
+                    let daysToReplace = (projected.1 - crit) / ((projected.1 - projected.3) / 365)
+                    if daysToReplace > 0 {
+                        Text("~\(Int(daysToReplace))d to replace")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
-                        HStack(spacing: 4) {
-                            Text("\(latest.1, specifier: "%.1f") mm")
-                                .font(.subheadline.bold())
-                                .foregroundStyle(.blue)
-                            if let crit = frontThreshold?.rotorCritical {
-                                Text("(min \(crit, specifier: "%.1f"))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.red)
+                    }
+                }
+            }
+
+            // Current thickness summary or selected point detail
+            if let selected = selectedRotorDate {
+                let frontPt = frontRotorData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) })
+                let rearPt = rearRotorData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) })
+                HStack(spacing: 16) {
+                    if let fp = frontPt {
+                        Label("Front: \(fp.1, specifier: "%.1f") mm", systemImage: "circle.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(.blue)
+                    }
+                    if let rp = rearPt {
+                        Label("Rear: \(rp.1, specifier: "%.1f") mm", systemImage: "square.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(.orange)
+                    }
+                    Spacer()
+                    if let fp = frontPt {
+                        Text(fp.0.formatted(date: .abbreviated, time: .omitted))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
+            } else {
+                HStack(spacing: 16) {
+                    if let latest = frontRotorData.last {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Front")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 4) {
+                                Text("\(latest.1, specifier: "%.1f") mm")
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(.blue)
+                                if let crit = frontThreshold?.rotorCritical {
+                                    Text("(min \(crit, specifier: "%.1f"))")
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                }
                             }
                         }
                     }
-                }
-                if let latest = rearRotorData.last {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Rear")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 4) {
-                            Text("\(latest.1, specifier: "%.1f") mm")
-                                .font(.subheadline.bold())
-                                .foregroundStyle(.orange)
-                            if let crit = rearThreshold?.rotorCritical {
-                                Text("(min \(crit, specifier: "%.1f"))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.red)
+                    if let latest = rearRotorData.last {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Rear")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 4) {
+                                Text("\(latest.1, specifier: "%.1f") mm")
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(.orange)
+                                if let crit = rearThreshold?.rotorCritical {
+                                    Text("(min \(crit, specifier: "%.1f"))")
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                }
                             }
                         }
                     }
@@ -265,6 +342,7 @@ struct AnalyticsView: View {
                         .symbol(.circle)
                     PointMark(x: .value("Date", point.0), y: .value("mm", point.1))
                         .foregroundStyle(by: .value("Type", "Front"))
+                        .symbolSize(selectedRotorDate != nil && isClosest(point.0, to: selectedRotorDate!, in: frontRotorData) ? 80 : 30)
                         .annotation(position: .top) {
                             Text("\(point.1, specifier: "%.1f")")
                                 .font(.system(size: 9))
@@ -277,6 +355,7 @@ struct AnalyticsView: View {
                         .symbol(.square)
                     PointMark(x: .value("Date", point.0), y: .value("mm", point.1))
                         .foregroundStyle(by: .value("Type", "Rear"))
+                        .symbolSize(selectedRotorDate != nil && isClosest(point.0, to: selectedRotorDate!, in: rearRotorData) ? 80 : 30)
                         .annotation(position: .bottom) {
                             Text("\(point.1, specifier: "%.1f")")
                                 .font(.system(size: 9))
@@ -319,11 +398,27 @@ struct AnalyticsView: View {
                 "Rear": Color.orange
             ])
             .chartYAxisLabel("mm")
+            .chartXSelection(value: $selectedRotorDate)
             .frame(height: 250)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectedRotorDate = nil
+            }
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func isClosest(_ date: Date, to selected: Date, in data: [(Date, Double)]) -> Bool {
+        guard let closest = data.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) else { return false }
+        return closest.0 == date
+    }
+
+    private func isClosestSpend(_ date: Date) -> Bool {
+        guard let selected = selectedSpendDate,
+              let closest = spendData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) else { return false }
+        return closest.0 == date
     }
 
     private func projectRotorWear(data: [(Date, Double)]) -> (Date, Double, Date, Double)? {
