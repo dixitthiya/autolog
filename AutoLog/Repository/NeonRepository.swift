@@ -56,34 +56,31 @@ actor NeonRepository {
             return []
         }
 
-        // Neon HTTP API may return rows at top level or nested under "result"
-        let resultObj = (json["result"] as? [String: Any]) ?? json
-
-        guard let rows = resultObj["rows"] as? [[Any]] else {
-            Log.db("no 'rows' array in response. Keys: \(Array(json.keys))")
-            return []
+        // Neon HTTP API returns rows as dictionaries: [{"col": "val"}, ...]
+        if let dictRows = json["rows"] as? [[String: Any]] {
+            return dictRows
         }
 
-        // Neon may use "fields" or "columns" for column metadata
-        let columnNames: [String]
-        if let fields = resultObj["fields"] as? [[String: Any]] {
-            columnNames = fields.compactMap { $0["name"] as? String }
-        } else if let columns = resultObj["columns"] as? [[String: Any]] {
-            columnNames = columns.compactMap { $0["name"] as? String }
-        } else if let fields = resultObj["fields"] as? [String] {
-            columnNames = fields
-        } else {
-            Log.db("no 'fields' or 'columns' in response. Keys: \(Array(resultObj.keys))")
-            return []
-        }
-
-        return rows.map { row in
-            var dict: [String: Any] = [:]
-            for (i, col) in columnNames.enumerated() where i < row.count {
-                dict[col] = row[i]
+        // Fallback: rows as arrays with separate fields metadata
+        if let arrayRows = json["rows"] as? [[Any]] {
+            let columnNames: [String]
+            if let fields = json["fields"] as? [[String: Any]] {
+                columnNames = fields.compactMap { $0["name"] as? String }
+            } else {
+                Log.db("array rows but no fields metadata")
+                return []
             }
-            return dict
+            return arrayRows.map { row in
+                var dict: [String: Any] = [:]
+                for (i, col) in columnNames.enumerated() where i < row.count {
+                    dict[col] = row[i]
+                }
+                return dict
+            }
         }
+
+        Log.db("no 'rows' in response. Keys: \(Array(json.keys))")
+        return []
     }
 
     private func executeNoResult(_ sql: String, params: [Any] = []) async throws {
