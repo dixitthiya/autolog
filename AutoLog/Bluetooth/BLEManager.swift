@@ -35,16 +35,21 @@ class BLEManager: NSObject, ObservableObject {
 
     @Published var connectionState: BLEConnectionState = .disconnected
     @Published var lastError: String?
+    @Published var autoModeEnabled = true
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
     private var notifyCharacteristic: CBCharacteristic?
-    private var reconnectTimer: Timer?
+    private var autoScanTimer: Timer?
     private var dataBuffer = Data()
+    private var wasDisconnectedByOtherApp = false
 
     private var dataContinuation: AsyncStream<Data>.Continuation?
     private(set) var dataStream: AsyncStream<Data>!
+
+    // Auto-scan interval: 2 minutes (testing mode — revert to 900 for production)
+    private let autoScanInterval: TimeInterval = 120
 
     // Common ELM327/OBD adapter BLE names
     private let knownNames = [
@@ -55,11 +60,11 @@ class BLEManager: NSObject, ObservableObject {
 
     // Common ELM327 service/characteristic UUIDs across adapters
     private let knownServiceUUIDs = [
-        CBUUID(string: "FFF0"),           // Vgate, many Chinese adapters
-        CBUUID(string: "FFE0"),           // Some ELM327 clones
-        CBUUID(string: "E7810A71-73AE-499D-8C15-FAA9AEF0C3F2"), // LELink
-        CBUUID(string: "18F0"),           // Some OBD adapters
-        CBUUID(string: "0000FFF0-0000-1000-8000-00805F9B34FB"), // Full FFF0
+        CBUUID(string: "FFF0"),
+        CBUUID(string: "FFE0"),
+        CBUUID(string: "E7810A71-73AE-499D-8C15-FAA9AEF0C3F2"),
+        CBUUID(string: "18F0"),
+        CBUUID(string: "0000FFF0-0000-1000-8000-00805F9B34FB"),
     ]
     private let knownWriteUUIDs = [
         CBUUID(string: "FFF2"), CBUUID(string: "FFE1"),
@@ -84,6 +89,9 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Public API
+
+    /// Start scanning for OBD adapter
     func startScanning() {
         guard centralManager.state == .poweredOn else {
             Log.ble("Bluetooth not powered on")
@@ -96,16 +104,38 @@ class BLEManager: NSObject, ObservableObject {
         centralManager.scanForPeripherals(withServices: nil, options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: false
         ])
+
+        // Stop scanning after 10 seconds to save battery
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            if connectionState == .scanning {
+                centralManager.stopScan()
+                connectionState = .disconnected
+                Log.ble("scan timeout, adapter not found")
+            }
+        }
     }
 
+    /// Disconnect and don't auto-reconnect
     func disconnect() {
-        reconnectTimer?.invalidate()
-        reconnectTimer = nil
+        autoScanTimer?.invalidate()
+        autoScanTimer = nil
         if let peripheral = peripheral {
             centralManager.cancelPeripheralConnection(peripheral)
         }
         connectionState = .disconnected
-        Log.ble("disconnected")
+        Log.ble("disconnected (manual)")
+    }
+
+    /// Disconnect after quick read — schedule next auto-scan
+    func disconnectAfterRead() {
+        if let peripheral = peripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
+        }
+        connectionState = .disconnected
+        clearPeripheralState()
+        Log.ble("disconnected after read")
+        scheduleAutoScan()
     }
 
     func send(_ command: String) {
@@ -117,13 +147,34 @@ class BLEManager: NSObject, ObservableObject {
         Log.obd("sending: \(command)")
     }
 
-    private func scheduleReconnect() {
-        reconnectTimer?.invalidate()
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: Config.bleReconnectInterval, repeats: false) { [weak self] _ in
+    // MARK: - Auto Scan
+
+    /// Start the auto-scan cycle — called once on app init
+    func startAutoScanCycle() {
+        guard autoModeEnabled else { return }
+        Log.ble("auto-scan cycle started (every \(Int(autoScanInterval))s)")
+        // Try immediately on first launch
+        startScanning()
+        scheduleAutoScan()
+    }
+
+    private func scheduleAutoScan() {
+        autoScanTimer?.invalidate()
+        guard autoModeEnabled else { return }
+        autoScanTimer = Timer.scheduledTimer(withTimeInterval: autoScanInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.startScanning()
+                guard let self = self, self.connectionState == .disconnected else { return }
+                Log.ble("auto-scan triggered")
+                self.startScanning()
             }
         }
+    }
+
+    private func clearPeripheralState() {
+        peripheral = nil
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        setupDataStream()
     }
 }
 
@@ -132,6 +183,9 @@ extension BLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             if central.state == .poweredOn {
                 Log.ble("Bluetooth powered on")
+                if autoModeEnabled && connectionState == .disconnected {
+                    startScanning()
+                }
             }
         }
     }
@@ -155,20 +209,23 @@ extension BLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             Log.ble("connected to \(peripheral.name ?? "device")")
             connectionState = .connected
-            // Discover all services — different adapters use different UUIDs
             peripheral.discoverServices(nil)
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         Task { @MainActor in
-            Log.ble("disconnected: \(error?.localizedDescription ?? "clean")")
+            let reason = error?.localizedDescription ?? "clean"
+            Log.ble("disconnected: \(reason)")
             connectionState = .disconnected
-            self.peripheral = nil
-            writeCharacteristic = nil
-            notifyCharacteristic = nil
-            setupDataStream()
-            scheduleReconnect()
+            clearPeripheralState()
+
+            // If disconnected unexpectedly (another app took over), don't retry immediately
+            if error != nil {
+                wasDisconnectedByOtherApp = true
+                Log.ble("unexpected disconnect — another app likely connected, waiting for next auto-scan")
+            }
+            // Auto-scan timer handles reconnection — no immediate retry
         }
     }
 
@@ -176,7 +233,7 @@ extension BLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             Log.ble("failed to connect: \(error?.localizedDescription ?? "unknown")")
             connectionState = .disconnected
-            scheduleReconnect()
+            // Don't retry immediately — wait for next auto-scan
         }
     }
 
@@ -186,7 +243,11 @@ extension BLEManager: CBCentralManagerDelegate {
             Task { @MainActor in
                 self.peripheral = restored
                 restored.delegate = self
-                Log.ble("restored peripheral")
+                Log.ble("restored peripheral from background")
+                if restored.state == .connected {
+                    connectionState = .connected
+                    restored.discoverServices(nil)
+                }
             }
         }
     }
@@ -198,7 +259,6 @@ extension BLEManager: CBPeripheralDelegate {
         Task { @MainActor in
             Log.ble("discovered \(services.count) services: \(services.map { $0.uuid.uuidString })")
         }
-        // Try known service UUIDs first, then discover characteristics on all services
         for service in services {
             peripheral.discoverCharacteristics(nil, for: service)
         }
@@ -210,7 +270,6 @@ extension BLEManager: CBPeripheralDelegate {
             Log.ble("service \(service.uuid): \(chars.map { "\($0.uuid)(\($0.properties.rawValue))" })")
 
             for char in chars {
-                // Match write characteristic: known UUID or has .write/.writeWithoutResponse property
                 if writeCharacteristic == nil {
                     if knownWriteUUIDs.contains(char.uuid) ||
                        (char.properties.contains(.write) || char.properties.contains(.writeWithoutResponse)) &&
@@ -220,7 +279,6 @@ extension BLEManager: CBPeripheralDelegate {
                     }
                 }
 
-                // Match notify characteristic: known UUID or has .notify property
                 if notifyCharacteristic == nil {
                     if knownNotifyUUIDs.contains(char.uuid) ||
                        char.properties.contains(.notify) && knownServiceUUIDs.contains(service.uuid) {

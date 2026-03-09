@@ -113,8 +113,9 @@ struct EditMileageView: View {
         } catch {
             errorMessage = error.localizedDescription
             if !isEditing {
+                let latestDist = await getLatestDistSinceCleared()
                 SyncManager.shared.queueMileageRecord(
-                    MileageRecord.manual(odometer: odometer, date: date)
+                    MileageRecord.manual(odometer: odometer, date: date, distSinceCodesCleared: latestDist)
                 )
             }
         }
@@ -123,10 +124,8 @@ struct EditMileageView: View {
 
     /// Get the latest dist_since_codes_cleared from OBD logs or recent mileage records
     private func getLatestDistSinceCleared() async -> Double? {
-        // Check if there's a recent OBD reading with 0131 value
         do {
-            let rows = try await NeonRepository.shared.getOBDDistSinceCleared()
-            return rows
+            return try await NeonRepository.shared.getOBDDistSinceCleared()
         } catch {
             return nil
         }

@@ -23,6 +23,8 @@ struct AutoLogApp: App {
                 guard !isInitialized else { return }
                 isInitialized = true
                 await initialize()
+                // Start background auto-scan cycle
+                bleManager.startAutoScanCycle()
             }
             .onChange(of: bleManager.connectionState) { _, newState in
                 if newState == .ready {
@@ -32,7 +34,13 @@ struct AutoLogApp: App {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
-                Task { await syncManager.syncAll() }
+                Task {
+                    await syncManager.syncAll()
+                    // Try to connect when app comes to foreground
+                    if bleManager.connectionState == .disconnected {
+                        bleManager.startScanning()
+                    }
+                }
             }
         }
     }

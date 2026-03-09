@@ -72,28 +72,28 @@ struct DashboardView: View {
 
     private var bleSection: some View {
         Section {
-            Button {
-                if bleManager.connectionState == .disconnected {
-                    bleManager.startScanning()
-                } else {
-                    bleManager.disconnect()
-                }
-            } label: {
-                HStack {
-                    Image(systemName: bleManager.connectionState.icon)
-                        .foregroundStyle(bleManager.connectionState == .ready ? .green : .blue)
-                    Text(bleManager.connectionState.displayText)
-                    Spacer()
-                    if bleManager.connectionState == .scanning || bleManager.connectionState == .connecting || mileageService.isReading {
-                        ProgressView()
-                            .controlSize(.small)
+            HStack {
+                Image(systemName: bleManager.connectionState.icon)
+                    .foregroundStyle(bleConnectionColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bleStatusText)
+                        .font(.subheadline)
+                    if !mileageService.obdStatus.isEmpty {
+                        Text(mileageService.obdStatus)
+                            .font(.caption)
+                            .foregroundStyle(mileageService.needsManualEntry ? .orange : .secondary)
+                    }
+                    if !mileageService.lastCaptureInfo.isEmpty && !mileageService.isReading {
+                        Text(mileageService.lastCaptureInfo)
+                            .font(.caption)
+                            .foregroundStyle(.green)
                     }
                 }
-            }
-            if !mileageService.obdStatus.isEmpty {
-                Text(mileageService.obdStatus)
-                    .font(.caption)
-                    .foregroundStyle(mileageService.needsManualEntry ? .orange : .secondary)
+                Spacer()
+                if mileageService.isReading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
             if mileageService.needsManualEntry {
                 NavigationLink {
@@ -108,8 +108,25 @@ struct DashboardView: View {
                 }
             }
         } header: {
-            Text("OBD Connection")
+            Text("OBD Auto-Capture")
         }
+    }
+
+    private var bleStatusText: String {
+        switch bleManager.connectionState {
+        case .disconnected:
+            return mileageService.lastCaptureInfo.isEmpty ? "Waiting for OBD adapter" : "Auto-capture active"
+        case .scanning: return "Scanning..."
+        case .connecting: return "Connecting..."
+        case .connected: return "Connected"
+        case .ready: return "Reading data..."
+        }
+    }
+
+    private var bleConnectionColor: Color {
+        if mileageService.isReading { return .blue }
+        if !mileageService.lastCaptureInfo.isEmpty { return .green }
+        return bleManager.connectionState == .disconnected ? .secondary : .blue
     }
 
     private var statusSection: some View {
