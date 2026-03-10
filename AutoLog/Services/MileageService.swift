@@ -195,7 +195,8 @@ class MileageService: ObservableObject {
 
             // Save snapshot for every capture (auto-purges after 7 days)
             await NeonRepository.shared.saveMileageSnapshot(
-                odometer: odometer, distSinceCodesCleared: distSinceCleared, rpm: rpm)
+                odometer: odometer, distSinceCodesCleared: distSinceCleared, rpm: rpm,
+                captureMode: bleManager.captureMode)
 
             currentMileage = odometer
             lastSyncDate = Date()
@@ -278,6 +279,7 @@ class MileageService: ObservableObject {
             lastSkipTime = nil
             obdStatus = "Reconnecting..."
             Log.obd("throttle expired — reconnecting")
+            bleManager.captureMode = "throttle_retry"
             bleManager.connectOrScan()
         }
     }

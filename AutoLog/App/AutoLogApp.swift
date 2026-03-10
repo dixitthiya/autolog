@@ -39,6 +39,7 @@ struct AutoLogApp: App {
                     // Clear throttle on foreground — always try fresh
                     mileageService.clearSkipThrottle()
                     if bleManager.connectionState == .disconnected {
+                        bleManager.captureMode = "fg_resume"
                         bleManager.connectOrScan()
                     }
                 }

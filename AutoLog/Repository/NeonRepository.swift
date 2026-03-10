@@ -158,8 +158,14 @@ actor NeonRepository {
                 odometer_miles DOUBLE PRECISION NOT NULL,
                 dist_since_codes_cleared DOUBLE PRECISION,
                 rpm INTEGER,
+                capture_mode TEXT,
                 created_at TIMESTAMPTZ DEFAULT now()
             )
+        """)
+
+        // Add capture_mode column if table already exists without it
+        try await executeNoResult("""
+            ALTER TABLE mileage_snapshots ADD COLUMN IF NOT EXISTS capture_mode TEXT
         """)
 
         // Auto-purge snapshots older than 7 days
@@ -314,14 +320,14 @@ actor NeonRepository {
 
     // MARK: - OBD Connection Logs
 
-    func saveMileageSnapshot(odometer: Double, distSinceCodesCleared: Double?, rpm: Int?) async {
+    func saveMileageSnapshot(odometer: Double, distSinceCodesCleared: Double?, rpm: Int?, captureMode: String) async {
         do {
             try await executeNoResult("""
-                INSERT INTO mileage_snapshots (id, timestamp, odometer_miles, dist_since_codes_cleared, rpm)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO mileage_snapshots (id, timestamp, odometer_miles, dist_since_codes_cleared, rpm, capture_mode)
+                VALUES ($1, $2, $3, $4, $5, $6)
             """, params: [
                 UUID().uuidString, Date(), odometer,
-                distSinceCodesCleared as Any, rpm as Any
+                distSinceCodesCleared as Any, rpm as Any, captureMode
             ])
             // Purge old snapshots (keep 7 days)
             try await executeNoResult("""

@@ -1,6 +1,7 @@
 import Foundation
 import CoreBluetooth
 import Combine
+import UIKit
 
 enum BLEConnectionState: String {
     case disconnected
@@ -36,6 +37,9 @@ class BLEManager: NSObject, ObservableObject {
     @Published var connectionState: BLEConnectionState = .disconnected
     @Published var lastError: String?
     @Published var autoModeEnabled = true
+
+    /// Tracks what triggered the current connection for snapshot categorization
+    var captureMode: String = "bg_auto"
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -176,6 +180,7 @@ class BLEManager: NSObject, ObservableObject {
         guard autoModeEnabled else { return }
         Log.ble("auto-scan cycle started (every \(Int(autoScanInterval))s)")
         // Try immediately on first launch
+        captureMode = "app_launch"
         connectOrScan()
         startAutoScanLoop()
     }
@@ -188,7 +193,9 @@ class BLEManager: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(self?.autoScanInterval ?? 120) * 1_000_000_000)
                 guard !Task.isCancelled, let self = self else { break }
                 if self.connectionState == .disconnected {
-                    Log.ble("auto-scan triggered")
+                    let isForeground = UIApplication.shared.applicationState == .active
+                    self.captureMode = isForeground ? "fg_timer" : "bg_auto"
+                    Log.ble("auto-scan triggered (context: \(self.captureMode))")
                     self.connectOrScan()
                 } else {
                     Log.ble("auto-scan skipped (state: \(self.connectionState.rawValue))")
@@ -237,6 +244,7 @@ class BLEManager: NSObject, ObservableObject {
             Log.ble("queued background reconnect for \(saved.name ?? uuid.uuidString)")
             saved.delegate = self
             // CB will auto-connect when peripheral is in range — even from background/suspended
+            captureMode = "bg_auto"
             centralManager.connect(saved, options: nil)
         }
     }
@@ -255,6 +263,8 @@ extension BLEManager: CBCentralManagerDelegate {
             if central.state == .poweredOn {
                 Log.ble("Bluetooth powered on")
                 if autoModeEnabled && connectionState == .disconnected {
+                    let isForeground = UIApplication.shared.applicationState == .active
+                    captureMode = isForeground ? "fg_timer" : "bg_auto"
                     startScanning()
                 }
             }
@@ -323,6 +333,7 @@ extension BLEManager: CBCentralManagerDelegate {
             Task { @MainActor in
                 self.peripheral = restored
                 restored.delegate = self
+                self.captureMode = "bg_auto"
                 Log.ble("restored peripheral from background (state: \(restored.state.rawValue))")
                 switch restored.state {
                 case .connected:

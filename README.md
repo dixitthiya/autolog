@@ -98,41 +98,15 @@ Retry on next BLE connection or app foreground
 
 ## NeonDB Schema
 
-```sql
--- Daily odometer records (auto-logged via BLE)
-CREATE TABLE mileage_records (
-  id TEXT PRIMARY KEY,
-  timestamp TIMESTAMPTZ NOT NULL,
-  odometer_miles DOUBLE PRECISION NOT NULL,
-  source TEXT NOT NULL,  -- 'BLE_AUTO' | 'MANUAL' | 'IMPORTED'
-  synced_at TIMESTAMPTZ DEFAULT now()
-);
+5 tables — see [DATABASE.md](DATABASE.md) for full column details.
 
--- All maintenance service records
-CREATE TABLE service_records (
-  id TEXT PRIMARY KEY,
-  timestamp TIMESTAMPTZ NOT NULL,
-  service_type TEXT NOT NULL,
-  category TEXT NOT NULL,
-  odometer_miles DOUBLE PRECISION NOT NULL,
-  rotor_thickness_mm DOUBLE PRECISION,
-  amount DOUBLE PRECISION,
-  comments TEXT,
-  manually_edited BOOLEAN DEFAULT false,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Service interval thresholds (editable in app)
-CREATE TABLE service_thresholds (
-  service_type TEXT PRIMARY KEY,
-  miles_critical DOUBLE PRECISION,
-  miles_warning DOUBLE PRECISION,
-  days_critical INTEGER,
-  days_warning INTEGER,
-  rotor_critical DOUBLE PRECISION,
-  rotor_warning DOUBLE PRECISION
-);
-```
+| Table | Purpose |
+|-------|---------|
+| `mileage_records` | Daily odometer records (BLE_AUTO / MANUAL / IMPORTED) |
+| `mileage_snapshots` | Every OBD capture with `capture_mode` — auto-purged after 7 days |
+| `service_records` | Maintenance service history |
+| `service_thresholds` | Warning/critical interval thresholds per service type |
+| `obd_connection_logs` | Raw OBD event log for debugging |
 
 ---
 
@@ -223,7 +197,7 @@ Import once on first app launch. Rows with `Service Type = "Current Mileage"` ar
 - **PIDs used:**
   - `010C` — Engine RPM (engine running detection)
   - `01A6` — Odometer (primary)
-  - `010D` — Vehicle speed (fallback odometer calculation)
+  - `0131` — Distance since codes cleared (used for mileage calculation when 01A6 unsupported)
 
 ---
 
