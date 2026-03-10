@@ -216,7 +216,7 @@ class BLEManager: NSObject, ObservableObject {
 
     /// Use CoreBluetooth's connect API to queue a reconnect — works in background
     /// CB will connect automatically when the peripheral becomes available, even if app is suspended
-    private func scheduleBackgroundReconnect() {
+    func scheduleBackgroundReconnect() {
         guard let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
               let uuid = UUID(uuidString: uuidString) else { return }
         let peripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
@@ -268,6 +268,8 @@ extension BLEManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
             Log.ble("connected to \(peripheral.name ?? "device")")
+            self.peripheral = peripheral
+            peripheral.delegate = self
             connectionState = .connected
             peripheral.discoverServices(nil)
         }

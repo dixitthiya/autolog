@@ -36,7 +36,8 @@ struct AutoLogApp: App {
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 Task {
                     await syncManager.syncAll()
-                    // Try to connect when app comes to foreground
+                    // Clear throttle on foreground — always try fresh
+                    mileageService.clearSkipThrottle()
                     if bleManager.connectionState == .disconnected {
                         bleManager.connectOrScan()
                     }

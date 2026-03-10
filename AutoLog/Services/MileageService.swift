@@ -13,17 +13,34 @@ class MileageService: ObservableObject {
     @Published var lastCaptureInfo: String = ""
 
     private var obdService: OBDCommandService?
+    private var lastSkipTime: Date?
 
     private init() {}
+
+    func clearSkipThrottle() {
+        lastSkipTime = nil
+    }
 
     /// Quick read: connect, read PIDs, save, disconnect (~10 seconds)
     func onBLEConnected(bleManager: BLEManager) async {
         guard !isReading else { return }
+
+        // Throttle: if last attempt was an RPM=0 skip less than 10s ago, skip this connection
+        // Disconnect with CB reconnect queued — lightweight BLE cycle
+        // (no OBD init, just connect/throttle-check/disconnect) until throttle expires
+        if let skipTime = lastSkipTime,
+           Date().timeIntervalSince(skipTime) < 10 {
+            let wait = Int(10 - Date().timeIntervalSince(skipTime))
+            Log.obd("throttled — engine was off, retrying in \(wait)s")
+            obdStatus = "Engine off — retrying in \(wait)s"
+            bleManager.disconnectAfterRead()
+            return
+        }
+
         isReading = true
         obdStatus = "Reading data..."
         defer {
             isReading = false
-            // Always disconnect after read — free up adapter for other apps
             bleManager.disconnectAfterRead()
         }
 
@@ -68,7 +85,8 @@ class MileageService: ObservableObject {
             // Only skip if RPM was successfully read as 0 (confirmed engine off)
             // If RPM read failed (timeout/junk), continue — fix #3 will catch bad data
             if rpmReadSuccess && rpm == 0 {
-                obdStatus = "Engine off — skipping capture"
+                obdStatus = "Engine off — retrying in 10s"
+                lastSkipTime = Date()
                 await NeonRepository.shared.logOBDEvent(
                     eventType: "skipped_engine_off", pid: "010C", rawResponse: nil,
                     parsedValue: 0, success: false,
@@ -174,6 +192,7 @@ class MileageService: ObservableObject {
 
             currentMileage = odometer
             lastSyncDate = Date()
+            lastSkipTime = nil
             let timeStr = Date().formatted(date: .omitted, time: .shortened)
             obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
             lastCaptureInfo = "Mileage: \(Int(odometer)) mi at \(timeStr)"
