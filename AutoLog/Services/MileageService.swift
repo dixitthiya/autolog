@@ -11,29 +11,29 @@ class MileageService: ObservableObject {
     @Published var obdStatus: String = ""
     @Published var needsManualEntry = false
     @Published var lastCaptureInfo: String = ""
+    @Published var isThrottled = false
 
     private var obdService: OBDCommandService?
     private var lastSkipTime: Date?
+    private var throttleTask: Task<Void, Never>?
 
     private init() {}
 
     func clearSkipThrottle() {
         lastSkipTime = nil
+        throttleTask?.cancel()
+        throttleTask = nil
+        isThrottled = false
     }
 
     /// Quick read: connect, read PIDs, save, disconnect (~10 seconds)
     func onBLEConnected(bleManager: BLEManager) async {
         guard !isReading else { return }
 
-        // Throttle: if last attempt was an RPM=0 skip less than 10s ago, skip this connection
-        // Disconnect with CB reconnect queued — lightweight BLE cycle
-        // (no OBD init, just connect/throttle-check/disconnect) until throttle expires
-        if let skipTime = lastSkipTime,
-           Date().timeIntervalSince(skipTime) < 10 {
-            let wait = Int(10 - Date().timeIntervalSince(skipTime))
-            Log.obd("throttled — engine was off, retrying in \(wait)s")
-            obdStatus = "Engine off — retrying in \(wait)s"
-            bleManager.disconnectAfterRead()
+        // Throttle: if engine-off countdown is active, skip — the countdown task will reconnect
+        if isThrottled {
+            Log.obd("throttled — countdown active, disconnecting quietly")
+            bleManager.disconnectQuietly()
             return
         }
 
@@ -41,7 +41,11 @@ class MileageService: ObservableObject {
         obdStatus = "Reading data..."
         defer {
             isReading = false
-            bleManager.disconnectAfterRead()
+            if isThrottled {
+                bleManager.disconnectQuietly()
+            } else {
+                bleManager.disconnectAfterRead()
+            }
         }
 
         let obd = OBDCommandService(bleManager: bleManager)
@@ -87,10 +91,13 @@ class MileageService: ObservableObject {
             if rpmReadSuccess && rpm == 0 {
                 obdStatus = "Engine off — retrying in 10s"
                 lastSkipTime = Date()
+                isThrottled = true
                 await NeonRepository.shared.logOBDEvent(
                     eventType: "skipped_engine_off", pid: "010C", rawResponse: nil,
                     parsedValue: 0, success: false,
                     errorMessage: "RPM=0, engine confirmed off")
+                // Start real countdown then reconnect
+                startThrottleCountdown(bleManager: bleManager)
                 return
             }
 
@@ -192,7 +199,7 @@ class MileageService: ObservableObject {
 
             currentMileage = odometer
             lastSyncDate = Date()
-            lastSkipTime = nil
+            clearSkipThrottle()
             let timeStr = Date().formatted(date: .omitted, time: .shortened)
             obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
             lastCaptureInfo = "Mileage: \(Int(odometer)) mi at \(timeStr)"
@@ -253,6 +260,26 @@ class MileageService: ObservableObject {
         let calculated = ref.odometerMiles + delta
         obdStatus = "Calculated: \(Int(calculated)) mi"
         return calculated
+    }
+
+    // MARK: - Throttle Countdown
+
+    /// Live countdown that updates the status label every second, then reconnects
+    private func startThrottleCountdown(bleManager: BLEManager) {
+        throttleTask?.cancel()
+        throttleTask = Task { @MainActor in
+            for remaining in stride(from: 10, through: 1, by: -1) {
+                guard !Task.isCancelled else { return }
+                obdStatus = "Engine off — retrying in \(remaining)s"
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            guard !Task.isCancelled else { return }
+            isThrottled = false
+            lastSkipTime = nil
+            obdStatus = "Reconnecting..."
+            Log.obd("throttle expired — reconnecting")
+            bleManager.connectOrScan()
+        }
     }
 
     // MARK: - Notifications

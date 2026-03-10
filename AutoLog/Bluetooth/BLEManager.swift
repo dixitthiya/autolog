@@ -147,6 +147,19 @@ class BLEManager: NSObject, ObservableObject {
         scheduleBackgroundReconnect()
     }
 
+    /// Disconnect without scheduling immediate reconnect (used during throttle to avoid reconnect loops)
+    /// Still restarts the auto-scan loop as a background safety net
+    func disconnectQuietly() {
+        isIntentionalDisconnect = true
+        if let peripheral = peripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
+        }
+        connectionState = .disconnected
+        clearPeripheralState()
+        Log.ble("disconnected quietly (throttled)")
+        startAutoScanLoop()
+    }
+
     func send(_ command: String) {
         guard let characteristic = writeCharacteristic,
               let peripheral = peripheral,
@@ -167,7 +180,7 @@ class BLEManager: NSObject, ObservableObject {
         startAutoScanLoop()
     }
 
-    private func startAutoScanLoop() {
+    func startAutoScanLoop() {
         autoScanTask?.cancel()
         guard autoModeEnabled else { return }
         autoScanTask = Task { @MainActor [weak self] in

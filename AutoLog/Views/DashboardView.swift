@@ -113,6 +113,10 @@ struct DashboardView: View {
     }
 
     private var bleStatusText: String {
+        // During throttle countdown, suppress BLE state flickering
+        if mileageService.isThrottled {
+            return "Auto-capture active"
+        }
         switch bleManager.connectionState {
         case .disconnected:
             return mileageService.lastCaptureInfo.isEmpty ? "Waiting for OBD adapter" : "Auto-capture active"
