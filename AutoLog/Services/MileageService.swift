@@ -213,7 +213,7 @@ class MileageService: ObservableObject {
             currentMileage = odometer
             lastSyncDate = Date()
             clearSkipThrottle()
-            let timeStr = Date().formatted(date: .omitted, time: .shortened)
+            let timeStr = Date().formatted(date: .omitted, time: .standard)
             obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
             lastCaptureInfo = "Mileage: \(Int(odometer)) mi at \(timeStr)"
 
