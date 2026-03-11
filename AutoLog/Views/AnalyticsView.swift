@@ -81,51 +81,52 @@ struct AnalyticsView: View {
 
     // MARK: - Daily Miles
 
-    private var allDailyMiles: [(String, Double)] {
+    private var allDailyMiles: [(String, Double, Date)] {
         let sorted = mileageRecords.sorted { $0.timestamp < $1.timestamp }
         guard sorted.count >= 2 else { return [] }
 
-        let cal = Calendar.current
         let formatter = DateFormatter()
         formatter.dateFormat = "M/d/yy"
+        let cal = Calendar.current
 
-        // Group records by calendar day (using startOfDay as key), take max odometer per day
-        var dailyMax: [Date: Double] = [:]
+        // Group records by calendar day, take max odometer per day
+        var dailyMax: [(date: Date, max: Double)] = []
+        var seen: [Date: Int] = [:]
         for record in sorted {
             let day = cal.startOfDay(for: record.timestamp)
-            dailyMax[day] = max(dailyMax[day] ?? 0, record.odometerMiles)
+            if let idx = seen[day] {
+                dailyMax[idx].max = max(dailyMax[idx].max, record.odometerMiles)
+            } else {
+                seen[day] = dailyMax.count
+                dailyMax.append((date: day, max: record.odometerMiles))
+            }
         }
 
-        let sortedDays = dailyMax.keys.sorted()
-        guard let firstDay = sortedDays.first, let lastDay = sortedDays.last else { return [] }
-
-        // Walk every calendar day from first to last, filling gaps with 0
-        var result: [(String, Double)] = []
-        var prevMax = dailyMax[firstDay]!
-        var current = cal.date(byAdding: .day, value: 1, to: firstDay)!
-
-        while current <= lastDay {
-            let label = formatter.string(from: current)
-            if let todayMax = dailyMax[current] {
-                let miles = max(0, todayMax - prevMax)
-                result.append((label, miles))
-                prevMax = todayMax
-            } else {
-                // No data for this day — 0 miles driven
-                result.append((label, 0))
-            }
-            current = cal.date(byAdding: .day, value: 1, to: current)!
+        // Only include days with actual data — no gap filling
+        var result: [(String, Double, Date)] = []
+        for i in 1..<dailyMax.count {
+            let prev = dailyMax[i - 1]
+            let curr = dailyMax[i]
+            let miles = max(0, curr.max - prev.max)
+            let label = formatter.string(from: curr.date)
+            result.append((label, miles, curr.date))
         }
         return result
     }
 
     private var dailyMiles: [(String, Double)] {
-        return Array(allDailyMiles.suffix(dailyTimeFilter.daysBack))
+        let cutoff = Calendar.current.date(byAdding: .day, value: -dailyTimeFilter.daysBack, to: Date()) ?? Date()
+        return allDailyMiles.filter { $0.2 >= cutoff }.map { ($0.0, $0.1) }
     }
 
     private var avgDailyMiles: Double {
-        guard !dailyMiles.isEmpty else { return 0 }
-        return dailyMiles.map(\.1).reduce(0, +) / Double(dailyMiles.count)
+        // Use same velocity method as projected service: (last - first) / days
+        let cutoff = Calendar.current.date(byAdding: .day, value: -dailyTimeFilter.daysBack, to: Date()) ?? Date()
+        let filtered = mileageRecords.filter { $0.timestamp >= cutoff }.sorted { $0.timestamp < $1.timestamp }
+        guard filtered.count >= 2, let first = filtered.first, let last = filtered.last else { return 0 }
+        let days = last.timestamp.timeIntervalSince(first.timestamp) / 86400
+        guard days > 0 else { return 0 }
+        return (last.odometerMiles - first.odometerMiles) / days
     }
 
     private var dailyMilesChart: some View {
