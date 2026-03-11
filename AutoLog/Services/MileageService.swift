@@ -302,12 +302,13 @@ class MileageService: ObservableObject {
     private func sendCaptureNotification(odometer: Double, captureMode: String) async {
         let content = UNMutableNotificationContent()
         content.title = "AutoLog"
-        content.body = "Mileage captured: \(Int(odometer).formatted()) mi"
-
         if captureMode == "bg_auto" {
+            let timeStr = Date().formatted(date: .omitted, time: .standard)
+            content.body = "Mileage captured: \(Int(odometer).formatted()) mi at \(timeStr)"
             content.sound = .default
             content.interruptionLevel = .active
         } else {
+            content.body = "Mileage captured: \(Int(odometer).formatted()) mi"
             content.sound = nil
             content.interruptionLevel = .passive
         }
