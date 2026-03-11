@@ -247,18 +247,20 @@ actor NeonRepository {
     }
 
     func getTodayBLEAutoRecord() async throws -> MileageRecord? {
-        // Use local device date to avoid UTC mismatch with Postgres CURRENT_DATE
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = .current
-        let localToday = formatter.string(from: Date())
-
+        // Get the most recent BLE_AUTO record, then check date in Swift (avoids Postgres timezone issues)
         let rows = try await execute("""
             SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records
-            WHERE DATE(timestamp AT TIME ZONE 'UTC' AT TIME ZONE $1) = $2::date AND source = 'BLE_AUTO'
+            WHERE source = 'BLE_AUTO'
             ORDER BY timestamp DESC LIMIT 1
-        """, params: [TimeZone.current.identifier, localToday])
-        return rows.first.flatMap { parseMileageRecord($0) }
+        """)
+        guard let record = rows.first.flatMap({ parseMileageRecord($0) }) else { return nil }
+
+        // Compare dates in local timezone
+        let cal = Calendar.current
+        if cal.isDateInToday(record.timestamp) {
+            return record
+        }
+        return nil
     }
 
     func getLatestMileageRecord() async throws -> MileageRecord? {

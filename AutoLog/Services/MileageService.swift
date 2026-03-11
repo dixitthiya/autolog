@@ -16,10 +16,6 @@ class MileageService: ObservableObject {
     private var obdService: OBDCommandService?
     private var lastSkipTime: Date?
     private var throttleTask: Task<Void, Never>?
-    private var lastCaptureTime: Date?
-
-    /// Minimum seconds between captures to prevent cascade
-    private let captureCooldown: TimeInterval = 60
 
     private init() {}
 
@@ -37,13 +33,6 @@ class MileageService: ObservableObject {
         // Throttle: if engine-off countdown is active, skip — the countdown task will reconnect
         if isThrottled {
             Log.obd("throttled — countdown active, disconnecting quietly")
-            bleManager.disconnectQuietly()
-            return
-        }
-
-        // Cooldown: skip if captured recently (prevents cascade from multiple reconnect triggers)
-        if let last = lastCaptureTime, Date().timeIntervalSince(last) < captureCooldown {
-            Log.obd("cooldown — captured \(Int(Date().timeIntervalSince(last)))s ago, skipping")
             bleManager.disconnectQuietly()
             return
         }
@@ -169,6 +158,13 @@ class MileageService: ObservableObject {
                 return
             }
 
+            // Dedup: skip save if odometer hasn't changed since last read
+            if currentMileage > 0 && abs(odometer - currentMileage) < 0.1 {
+                Log.obd("dedup — odometer unchanged (\(Int(odometer)) mi), skipping save")
+                obdStatus = "No change — \(Int(odometer)) mi"
+                return
+            }
+
             // Save or update today's BLE_AUTO record (never overwrite MANUAL entries)
             let todayBLERecord = try await NeonRepository.shared.getTodayBLEAutoRecord()
             let record = MileageRecord.bleAuto(odometer: odometer, distSinceCodesCleared: distSinceCleared)
@@ -209,7 +205,6 @@ class MileageService: ObservableObject {
                 odometer: odometer, distSinceCodesCleared: distSinceCleared, rpm: rpm,
                 captureMode: bleManager.captureMode)
 
-            lastCaptureTime = Date()
             currentMileage = odometer
             lastSyncDate = Date()
             clearSkipThrottle()
