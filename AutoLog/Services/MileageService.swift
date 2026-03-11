@@ -217,8 +217,8 @@ class MileageService: ObservableObject {
             obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
             lastCaptureInfo = "Mileage: \(Int(odometer)) mi at \(timeStr)"
 
-            // Send a silent notification so user knows data was captured
-            await sendCaptureNotification(odometer: odometer)
+            // Send notification — prominent for bg_auto, silent for foreground captures
+            await sendCaptureNotification(odometer: odometer, captureMode: bleManager.captureMode)
 
             await checkStatusNotifications()
             await SyncManager.shared.syncAll()
@@ -299,15 +299,22 @@ class MileageService: ObservableObject {
     // MARK: - Notifications
 
     /// Notify user that mileage data was captured (so they know they can switch to Car Scanner Pro)
-    private func sendCaptureNotification(odometer: Double) async {
+    private func sendCaptureNotification(odometer: Double, captureMode: String) async {
         let content = UNMutableNotificationContent()
         content.title = "AutoLog"
         content.body = "Mileage captured: \(Int(odometer).formatted()) mi"
-        content.sound = nil // Silent — just a banner
-        content.interruptionLevel = .passive
 
+        if captureMode == "bg_auto" {
+            content.sound = .default
+            content.interruptionLevel = .active
+        } else {
+            content.sound = nil
+            content.interruptionLevel = .passive
+        }
+
+        let identifier = captureMode == "bg_auto" ? UUID().uuidString : "mileage-capture"
         let request = UNNotificationRequest(
-            identifier: "mileage-capture",
+            identifier: identifier,
             content: content,
             trigger: nil
         )
