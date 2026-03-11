@@ -8,8 +8,10 @@ struct AnalyticsView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedMonth: String?
+    @State private var selectedDay: String?
     @State private var selectedSpendDate: Date?
     @State private var selectedRotorDate: Date?
+    @State private var dailyTimeFilter: DailyTimeFilter = .twoWeeks
     @State private var milesTimeFilter: TimeFilter = .threeMonths
     @State private var spendTimeFilter: TimeFilter = .threeMonths
 
@@ -29,11 +31,32 @@ struct AnalyticsView: View {
         }
     }
 
+    private enum DailyTimeFilter: String, CaseIterable {
+        case twoWeeks = "2W"
+        case fourWeeks = "4W"
+        case threeMonths = "3M"
+        case sixMonths = "6M"
+        case oneYear = "1Y"
+
+        var daysBack: Int {
+            switch self {
+            case .twoWeeks: return 14
+            case .fourWeeks: return 28
+            case .threeMonths: return 90
+            case .sixMonths: return 180
+            case .oneYear: return 365
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
                     projectedServiceDates
+                    if !allDailyMiles.isEmpty {
+                        dailyMilesChart
+                    }
                     if !monthlyMiles.isEmpty {
                         milesPerMonthChart
                     }
@@ -54,6 +77,128 @@ struct AnalyticsView: View {
             }
             .task { await loadData() }
         }
+    }
+
+    // MARK: - Daily Miles
+
+    private var allDailyMiles: [(String, Double)] {
+        let sorted = mileageRecords.sorted { $0.timestamp < $1.timestamp }
+        guard sorted.count >= 2 else { return [] }
+
+        let cal = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d/yy"
+
+        // Group records by calendar day (using startOfDay as key), take max odometer per day
+        var dailyMax: [Date: Double] = [:]
+        for record in sorted {
+            let day = cal.startOfDay(for: record.timestamp)
+            dailyMax[day] = max(dailyMax[day] ?? 0, record.odometerMiles)
+        }
+
+        let sortedDays = dailyMax.keys.sorted()
+        guard let firstDay = sortedDays.first, let lastDay = sortedDays.last else { return [] }
+
+        // Walk every calendar day from first to last, filling gaps with 0
+        var result: [(String, Double)] = []
+        var prevMax = dailyMax[firstDay]!
+        var current = cal.date(byAdding: .day, value: 1, to: firstDay)!
+
+        while current <= lastDay {
+            let label = formatter.string(from: current)
+            if let todayMax = dailyMax[current] {
+                let miles = max(0, todayMax - prevMax)
+                result.append((label, miles))
+                prevMax = todayMax
+            } else {
+                // No data for this day — 0 miles driven
+                result.append((label, 0))
+            }
+            current = cal.date(byAdding: .day, value: 1, to: current)!
+        }
+        return result
+    }
+
+    private var dailyMiles: [(String, Double)] {
+        return Array(allDailyMiles.suffix(dailyTimeFilter.daysBack))
+    }
+
+    private var avgDailyMiles: Double {
+        guard !dailyMiles.isEmpty else { return 0 }
+        return dailyMiles.map(\.1).reduce(0, +) / Double(dailyMiles.count)
+    }
+
+    private var dailyMilesChart: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Daily Miles")
+                    .font(.headline)
+                Spacer()
+                if let selected = selectedDay,
+                   let data = dailyMiles.first(where: { $0.0 == selected }) {
+                    Text("\(data.0): \(Int(data.1).formatted()) mi")
+                        .font(.caption.bold())
+                        .foregroundStyle(.cyan)
+                } else {
+                    Text("Avg: \(Int(avgDailyMiles).formatted()) mi")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            dailyTimeFilterPicker
+
+            Chart {
+                ForEach(dailyMiles, id: \.0) { item in
+                    BarMark(x: .value("Day", item.0), y: .value("Miles", item.1))
+                        .foregroundStyle(item.0 == selectedDay ? .cyan : .cyan.opacity(0.5))
+                        .cornerRadius(4)
+                    if item.0 == selectedDay {
+                        BarMark(x: .value("Day", item.0), y: .value("Miles", item.1))
+                            .foregroundStyle(.clear)
+                            .annotation(position: .top) {
+                                Text("\(Int(item.1).formatted())")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.cyan)
+                            }
+                    }
+                }
+
+                RuleMark(y: .value("Average", avgDailyMiles))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                    .foregroundStyle(.orange)
+                    .annotation(position: .top, alignment: .trailing) {
+                        Text("avg \(Int(avgDailyMiles).formatted())")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+            }
+            .chartYAxisLabel("miles")
+            .frame(height: 200)
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .gesture(
+                            SpatialTapGesture()
+                                .onEnded { value in
+                                    let plotFrame = geo[proxy.plotFrame!]
+                                    let tapX = value.location.x - plotFrame.origin.x
+                                    let barWidth = plotFrame.width / CGFloat(dailyMiles.count)
+                                    let index = Int(tapX / barWidth)
+                                    if index >= 0 && index < dailyMiles.count {
+                                        let tapped = dailyMiles[index].0
+                                        selectedDay = selectedDay == tapped ? nil : tapped
+                                    } else {
+                                        selectedDay = nil
+                                    }
+                                }
+                        )
+                }
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Miles Per Month
@@ -103,6 +248,29 @@ struct AnalyticsView: View {
     private var avgMonthlyMiles: Double {
         guard !filteredMonthlyMiles.isEmpty else { return 0 }
         return filteredMonthlyMiles.map(\.1).reduce(0, +) / Double(filteredMonthlyMiles.count)
+    }
+
+    private var dailyTimeFilterPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(DailyTimeFilter.allCases, id: \.self) { filter in
+                Button {
+                    withAnimation {
+                        dailyTimeFilter = filter
+                        selectedDay = nil
+                    }
+                } label: {
+                    Text(filter.rawValue)
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(dailyTimeFilter == filter ? Color.cyan : Color.clear)
+                        .foregroundStyle(dailyTimeFilter == filter ? .white : .secondary)
+                        .clipShape(Capsule())
+                }
+            }
+        }
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(Capsule())
     }
 
     private func timeFilterPicker(selection: Binding<TimeFilter>) -> some View {
