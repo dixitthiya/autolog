@@ -142,13 +142,12 @@ class MileageService: ObservableObject {
                 return
             }
 
-            // Sanity check: reject if odometer drops more than 5 miles from last known value
-            // PID 0131 (distance since codes cleared) reports in whole km; km→mi conversion
-            // and ECU reporting lag can cause 1-3 mile jitter between consecutive reads.
+            // Sanity check: reject if odometer drops more than 1.5 miles from last known value
+            // CAN filter (ATCRA7E8) should prevent ghost values; this is a safety net.
             if let lastRecord = try await NeonRepository.shared.getLatestMileageRecord(),
                lastRecord.odometerMiles > 0,
-               odometer < lastRecord.odometerMiles - 0.5 {
-                // Retry once after 2s — first read after cold connect is often stale
+               odometer < lastRecord.odometerMiles - 1.5 {
+                // Retry once after 2s
                 obdStatus = "Verifying reading..."
                 try await Task.sleep(nanoseconds: 2_000_000_000)
                 var retryDist: Double?
@@ -163,7 +162,7 @@ class MileageService: ObservableObject {
                     retryOdometer = try await calculateMileage(currentDistSinceCleared: retryDist)
                 }
 
-                if retryOdometer < lastRecord.odometerMiles - 0.5 {
+                if retryOdometer < lastRecord.odometerMiles - 1.5 {
                     obdStatus = "Bad reading — skipped"
                     needsManualEntry = true
                     await NeonRepository.shared.logOBDEvent(

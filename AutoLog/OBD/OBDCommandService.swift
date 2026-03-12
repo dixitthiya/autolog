@@ -19,6 +19,7 @@ actor OBDCommandService {
             "ATH0",   // Headers off
             "ATS0",   // Spaces off
             "ATSP6",  // Force ISO 15765-4 CAN (11-bit, 500kbaud) — matches user's vehicle
+            "ATCRA7E8", // Only accept responses from engine ECU — filters ghost values from other modules
         ]
         for cmd in initCommands {
             _ = try await sendCommand(cmd)
