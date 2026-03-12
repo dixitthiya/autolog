@@ -113,7 +113,7 @@ struct DashboardView: View {
                 Spacer()
                 Button {
                     guard !mileageService.isReading else { return }
-                    bleManager.captureMode = "manual"
+                    bleManager.captureMode = "dashboard_button"
                     bleManager.connectOrScan()
                 } label: {
                     Label("Capture", systemImage: "arrow.clockwise")
