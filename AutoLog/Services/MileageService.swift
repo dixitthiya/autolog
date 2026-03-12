@@ -132,8 +132,11 @@ class MileageService: ObservableObject {
             }
 
             // Calculate mileage
+            var promptManualEntry = false
             if odometer == 0 {
-                odometer = try await calculateMileage(currentDistSinceCleared: distSinceCleared)
+                let (calc, shouldPrompt) = try await calculateMileage(currentDistSinceCleared: distSinceCleared)
+                odometer = calc
+                promptManualEntry = shouldPrompt
             }
 
             guard odometer > 0 else {
@@ -159,7 +162,9 @@ class MileageService: ObservableObject {
 
                 var retryOdometer = odometer
                 if retryDist != nil {
-                    retryOdometer = try await calculateMileage(currentDistSinceCleared: retryDist)
+                    let (calc, shouldPrompt) = try await calculateMileage(currentDistSinceCleared: retryDist)
+                    retryOdometer = calc
+                    promptManualEntry = shouldPrompt
                 }
 
                 if retryOdometer < lastRecord.odometerMiles - 1.5 {
@@ -218,7 +223,7 @@ class MileageService: ObservableObject {
 
             currentMileage = odometer
             lastSyncDate = Date()
-            needsManualEntry = false
+            needsManualEntry = promptManualEntry
             clearSkipThrottle()
             let timeStr = Date().formatted(date: .omitted, time: .standard)
             obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
@@ -241,14 +246,14 @@ class MileageService: ObservableObject {
     }
 
     /// Calculate current mileage using: manual entry (priority 1) > reference + delta from 0131
-    private func calculateMileage(currentDistSinceCleared: Double?) async throws -> Double {
+    /// Returns (odometer, shouldPromptManualEntry)
+    private func calculateMileage(currentDistSinceCleared: Double?) async throws -> (Double, Bool) {
         let manualRef = try await NeonRepository.shared.getLatestManualMileageRecord()
 
         guard let ref = manualRef else {
-            needsManualEntry = true
             obdStatus = "Enter odometer to start tracking"
             let latest = try await NeonRepository.shared.getLatestMileageRecord()
-            return latest?.odometerMiles ?? 0
+            return (latest?.odometerMiles ?? 0, true)
         }
 
         guard let currentDist = currentDistSinceCleared else {
@@ -257,30 +262,28 @@ class MileageService: ObservableObject {
             let lastKnown = latest?.odometerMiles ?? 0
             let best = max(ref.odometerMiles, lastKnown)
             obdStatus = "Using last known: \(Int(best)) mi"
-            return best
+            return (best, false)
         }
 
         guard let refDist = ref.distSinceCodesCleared else {
-            needsManualEntry = true
             obdStatus = "Confirm odometer now to enable auto-tracking"
-            return ref.odometerMiles
+            return (ref.odometerMiles, true)
         }
 
         let delta = currentDist - refDist
 
         if delta < 0 {
-            needsManualEntry = true
             obdStatus = "Codes cleared — enter new odometer"
             await NeonRepository.shared.logOBDEvent(
                 eventType: "codes_cleared_detected", pid: "0131", rawResponse: nil,
                 parsedValue: currentDist, success: false,
                 errorMessage: "Negative delta: current=\(Int(currentDist)) ref=\(Int(refDist))")
-            return ref.odometerMiles
+            return (ref.odometerMiles, true)
         }
 
         let calculated = ref.odometerMiles + delta
         obdStatus = "Calculated: \(Int(calculated)) mi"
-        return calculated
+        return (calculated, false)
     }
 
     // MARK: - Throttle Countdown
