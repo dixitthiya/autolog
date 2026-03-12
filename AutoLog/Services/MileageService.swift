@@ -142,16 +142,39 @@ class MileageService: ObservableObject {
                 return
             }
 
-            // Sanity check: reject if odometer drops more than 1 mile from last known value
+            // Sanity check: reject if odometer drops more than 5 miles from last known value
+            // PID 0131 (distance since codes cleared) reports in whole km; km→mi conversion
+            // and ECU reporting lag can cause 1-3 mile jitter between consecutive reads.
             if let lastRecord = try await NeonRepository.shared.getLatestMileageRecord(),
                lastRecord.odometerMiles > 0,
-               odometer < lastRecord.odometerMiles - 1 {
-                obdStatus = "Bad reading — skipped"
-                await NeonRepository.shared.logOBDEvent(
-                    eventType: "sanity_check_failed", pid: nil, rawResponse: nil,
-                    parsedValue: odometer, success: false,
-                    errorMessage: "Odometer dropped: \(Int(odometer)) < last \(Int(lastRecord.odometerMiles))")
-                return
+               odometer < lastRecord.odometerMiles - 0.5 {
+                // Retry once after 2s — first read after cold connect is often stale
+                obdStatus = "Verifying reading..."
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                var retryDist: Double?
+                do {
+                    let retryRaw = try await obd.sendCommand("0131")
+                    let retryMiles = PIDParser.parseDistanceSinceCodesCleared(retryRaw)
+                    retryDist = retryMiles > 0 ? retryMiles : nil
+                } catch { /* retry failed, use original */ }
+
+                var retryOdometer = odometer
+                if retryDist != nil {
+                    retryOdometer = try await calculateMileage(currentDistSinceCleared: retryDist)
+                }
+
+                if retryOdometer < lastRecord.odometerMiles - 0.5 {
+                    obdStatus = "Bad reading — skipped"
+                    needsManualEntry = true
+                    await NeonRepository.shared.logOBDEvent(
+                        eventType: "sanity_check_failed", pid: nil, rawResponse: nil,
+                        parsedValue: retryOdometer, success: false,
+                        errorMessage: "Odometer dropped after retry: \(Int(retryOdometer)) < last \(Int(lastRecord.odometerMiles))")
+                    return
+                }
+                // Retry succeeded — use the better value
+                odometer = retryOdometer
+                distSinceCleared = retryDist ?? distSinceCleared
             }
 
             // Save or update today's BLE_AUTO record (never overwrite MANUAL entries)
@@ -196,6 +219,7 @@ class MileageService: ObservableObject {
 
             currentMileage = odometer
             lastSyncDate = Date()
+            needsManualEntry = false
             clearSkipThrottle()
             let timeStr = Date().formatted(date: .omitted, time: .standard)
             obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
