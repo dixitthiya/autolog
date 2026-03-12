@@ -108,7 +108,19 @@ struct DashboardView: View {
                 }
             }
         } header: {
-            Text("OBD Auto-Capture")
+            HStack {
+                Text("OBD Auto-Capture")
+                Spacer()
+                Button {
+                    guard !mileageService.isReading else { return }
+                    bleManager.captureMode = "manual"
+                    bleManager.connectOrScan()
+                } label: {
+                    Label("Capture", systemImage: "arrow.clockwise")
+                        .font(.caption2.bold())
+                }
+                .disabled(mileageService.isReading)
+            }
         }
     }
 
