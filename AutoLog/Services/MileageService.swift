@@ -205,6 +205,7 @@ class MileageService: ObservableObject {
             await sendCaptureNotification(odometer: odometer, captureMode: bleManager.captureMode)
 
             await checkStatusNotifications()
+            await ServiceReminderScheduler.reschedule()
             await SyncManager.shared.syncAll()
 
         } catch {

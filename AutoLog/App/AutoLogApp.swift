@@ -66,6 +66,9 @@ struct AutoLogApp: App {
 
         // Sync pending records
         await syncManager.syncAll()
+
+        // Schedule service reminder notifications
+        await ServiceReminderScheduler.reschedule()
     }
 }
 
