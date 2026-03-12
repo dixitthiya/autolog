@@ -39,7 +39,7 @@ class BLEManager: NSObject, ObservableObject {
     @Published var autoModeEnabled = true
 
     /// Tracks what triggered the current connection for snapshot categorization
-    var captureMode: String = "bg_auto"
+    var captureMode: String = "app_launch"
 
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -47,7 +47,6 @@ class BLEManager: NSObject, ObservableObject {
     private var notifyCharacteristic: CBCharacteristic?
     private var autoScanTask: Task<Void, Never>?
     private var dataBuffer = Data()
-    private var wasDisconnectedByOtherApp = false
     private var isIntentionalDisconnect = false
 
     // Persist last known adapter UUID for direct reconnection
@@ -56,7 +55,7 @@ class BLEManager: NSObject, ObservableObject {
     private var dataContinuation: AsyncStream<Data>.Continuation?
     private(set) var dataStream: AsyncStream<Data>!
 
-    // Auto-scan interval: 2 minutes (testing mode — revert to 900 for production)
+    // Auto-scan interval: 2 minutes (foreground only)
     private let autoScanInterval: TimeInterval = 120
 
     // Common ELM327/OBD adapter BLE names
@@ -137,7 +136,7 @@ class BLEManager: NSObject, ObservableObject {
         Log.ble("disconnected (manual)")
     }
 
-    /// Disconnect after quick read — schedule background-safe reconnect
+    /// Disconnect after a read — restarts foreground auto-scan loop
     func disconnectAfterRead() {
         isIntentionalDisconnect = true
         if let peripheral = peripheral {
@@ -146,21 +145,6 @@ class BLEManager: NSObject, ObservableObject {
         connectionState = .disconnected
         clearPeripheralState()
         Log.ble("disconnected after read")
-        startAutoScanLoop()
-        // Also schedule a background-safe reconnect using CoreBluetooth
-        scheduleBackgroundReconnect()
-    }
-
-    /// Disconnect without scheduling immediate reconnect (used during throttle to avoid reconnect loops)
-    /// Still restarts the auto-scan loop as a background safety net
-    func disconnectQuietly() {
-        isIntentionalDisconnect = true
-        if let peripheral = peripheral {
-            centralManager.cancelPeripheralConnection(peripheral)
-        }
-        connectionState = .disconnected
-        clearPeripheralState()
-        Log.ble("disconnected quietly (throttled)")
         startAutoScanLoop()
     }
 
@@ -173,13 +157,12 @@ class BLEManager: NSObject, ObservableObject {
         Log.obd("sending: \(command)")
     }
 
-    // MARK: - Auto Scan
+    // MARK: - Auto Scan (Foreground Only)
 
     /// Start the auto-scan cycle — called once on app init
     func startAutoScanCycle() {
         guard autoModeEnabled else { return }
-        Log.ble("auto-scan cycle started (every \(Int(autoScanInterval))s)")
-        // Try immediately on first launch
+        Log.ble("auto-scan cycle started (every \(Int(autoScanInterval))s, foreground only)")
         captureMode = "app_launch"
         connectOrScan()
         startAutoScanLoop()
@@ -192,10 +175,14 @@ class BLEManager: NSObject, ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(self?.autoScanInterval ?? 120) * 1_000_000_000)
                 guard !Task.isCancelled, let self = self else { break }
+                // Only auto-scan in foreground
+                guard UIApplication.shared.applicationState == .active else {
+                    Log.ble("auto-scan skipped (app not in foreground)")
+                    continue
+                }
                 if self.connectionState == .disconnected {
-                    let isForeground = UIApplication.shared.applicationState == .active
-                    self.captureMode = isForeground ? "fg_timer" : "bg_auto"
-                    Log.ble("auto-scan triggered (context: \(self.captureMode))")
+                    self.captureMode = "fg_timer"
+                    Log.ble("auto-scan triggered (fg_timer)")
                     self.connectOrScan()
                 } else {
                     Log.ble("auto-scan skipped (state: \(self.connectionState.rawValue))")
@@ -206,7 +193,6 @@ class BLEManager: NSObject, ObservableObject {
 
     /// Try direct reconnect to saved peripheral first, fall back to scanning
     func connectOrScan() {
-        // Try direct reconnect using saved peripheral UUID
         if let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
            let uuid = UUID(uuidString: uuidString) {
             let knownPeripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
@@ -234,21 +220,6 @@ class BLEManager: NSObject, ObservableObject {
         startScanning()
     }
 
-    /// Use CoreBluetooth's connect API to queue a reconnect — works in background
-    /// CB will connect automatically when the peripheral becomes available, even if app is suspended
-    func scheduleBackgroundReconnect() {
-        guard let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
-              let uuid = UUID(uuidString: uuidString) else { return }
-        let peripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
-        if let saved = peripherals.first {
-            Log.ble("queued background reconnect for \(saved.name ?? uuid.uuidString)")
-            saved.delegate = self
-            // CB will auto-connect when peripheral is in range — even from background/suspended
-            captureMode = "bg_auto"
-            centralManager.connect(saved, options: nil)
-        }
-    }
-
     private func clearPeripheralState() {
         peripheral = nil
         writeCharacteristic = nil
@@ -263,8 +234,8 @@ extension BLEManager: CBCentralManagerDelegate {
             if central.state == .poweredOn {
                 Log.ble("Bluetooth powered on")
                 if autoModeEnabled && connectionState == .disconnected {
-                    let isForeground = UIApplication.shared.applicationState == .active
-                    captureMode = isForeground ? "fg_timer" : "bg_auto"
+                    guard UIApplication.shared.applicationState == .active else { return }
+                    captureMode = "fg_timer"
                     startScanning()
                 }
             }
@@ -282,7 +253,6 @@ extension BLEManager: CBCentralManagerDelegate {
             peripheral.delegate = self
             centralManager.stopScan()
             connectionState = .connecting
-            // Save UUID for direct reconnection next time
             UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: savedPeripheralKey)
             centralManager.connect(peripheral, options: nil)
         }
@@ -304,18 +274,7 @@ extension BLEManager: CBCentralManagerDelegate {
             Log.ble("disconnected: \(reason)")
             connectionState = .disconnected
             clearPeripheralState()
-
-            if isIntentionalDisconnect {
-                // We disconnected on purpose after a read — background reconnect already queued
-                isIntentionalDisconnect = false
-                Log.ble("intentional disconnect — background reconnect queued")
-            } else if error != nil {
-                // Unexpected disconnect (another app took over, out of range, etc.)
-                // Queue a CB reconnect — iOS will reconnect when peripheral is available again
-                wasDisconnectedByOtherApp = true
-                Log.ble("unexpected disconnect — queuing background reconnect")
-                scheduleBackgroundReconnect()
-            }
+            isIntentionalDisconnect = false
         }
     }
 
@@ -323,31 +282,22 @@ extension BLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             Log.ble("failed to connect: \(error?.localizedDescription ?? "unknown")")
             connectionState = .disconnected
-            // Don't retry immediately — wait for next auto-scan
         }
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        // No background capture — just clean up restored state
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
            let restored = peripherals.first {
             Task { @MainActor in
-                self.peripheral = restored
-                restored.delegate = self
-                self.captureMode = "bg_auto"
                 Log.ble("restored peripheral from background (state: \(restored.state.rawValue))")
-                switch restored.state {
-                case .connected:
+                if restored.state == .connected {
+                    self.peripheral = restored
+                    restored.delegate = self
                     connectionState = .connected
                     restored.discoverServices(nil)
-                case .connecting:
-                    connectionState = .connecting
-                    Log.ble("restored: still connecting...")
-                case .disconnected, .disconnecting:
+                } else {
                     connectionState = .disconnected
-                    // Re-queue background reconnect
-                    scheduleBackgroundReconnect()
-                @unknown default:
-                    break
                 }
             }
         }

@@ -144,18 +144,14 @@ struct DashboardView: View {
     }
 
     private var groupedByCategory: [(String, [DashboardRow])] {
-        let sorted = dashboardRows.sorted { $0.status < $1.status }
-        var groups: [(String, [DashboardRow])] = []
-        var seen = Set<String>()
-
-        for row in sorted {
+        var catMap: [String: [DashboardRow]] = [:]
+        for row in dashboardRows {
             let cat = ServiceCategory.category(for: row.serviceType)
-            if !seen.contains(cat) {
-                seen.insert(cat)
-                groups.append((cat, sorted.filter { ServiceCategory.category(for: $0.serviceType) == cat }))
-            }
+            catMap[cat, default: []].append(row)
         }
-        return groups
+        return catMap.keys.sorted().map { cat in
+            (cat, catMap[cat]!.sorted { $0.serviceType < $1.serviceType })
+        }
     }
 
     private var offlineBanner: some View {

@@ -32,8 +32,8 @@ class MileageService: ObservableObject {
 
         // Throttle: if engine-off countdown is active, skip — the countdown task will reconnect
         if isThrottled {
-            Log.obd("throttled — countdown active, disconnecting quietly")
-            bleManager.disconnectQuietly()
+            Log.obd("throttled — countdown active, disconnecting")
+            bleManager.disconnectAfterRead()
             return
         }
 
@@ -41,11 +41,7 @@ class MileageService: ObservableObject {
         obdStatus = "Reading data..."
         defer {
             isReading = false
-            if isThrottled {
-                bleManager.disconnectQuietly()
-            } else {
-                bleManager.disconnectAfterRead()
-            }
+            bleManager.disconnectAfterRead()
         }
 
         let obd = OBDCommandService(bleManager: bleManager)
@@ -158,13 +154,6 @@ class MileageService: ObservableObject {
                 return
             }
 
-            // Dedup: skip save if odometer hasn't changed since last read
-            if currentMileage > 0 && abs(odometer - currentMileage) < 0.1 {
-                Log.obd("dedup — odometer unchanged (\(Int(odometer)) mi), skipping save")
-                obdStatus = "No change — \(Int(odometer)) mi"
-                return
-            }
-
             // Save or update today's BLE_AUTO record (never overwrite MANUAL entries)
             let todayBLERecord = try await NeonRepository.shared.getTodayBLEAutoRecord()
             let record = MileageRecord.bleAuto(odometer: odometer, distSinceCodesCleared: distSinceCleared)
@@ -212,7 +201,7 @@ class MileageService: ObservableObject {
             obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
             lastCaptureInfo = "Mileage: \(Int(odometer)) mi at \(timeStr)"
 
-            // Send notification — prominent for bg_auto, silent for foreground captures
+            // Send silent notification so user knows data was captured
             await sendCaptureNotification(odometer: odometer, captureMode: bleManager.captureMode)
 
             await checkStatusNotifications()
@@ -293,24 +282,16 @@ class MileageService: ObservableObject {
 
     // MARK: - Notifications
 
-    /// Notify user that mileage data was captured (so they know they can switch to Car Scanner Pro)
+    /// Notify user that mileage data was captured
     private func sendCaptureNotification(odometer: Double, captureMode: String) async {
         let content = UNMutableNotificationContent()
         content.title = "AutoLog"
-        if captureMode == "bg_auto" {
-            let timeStr = Date().formatted(date: .omitted, time: .standard)
-            content.body = "Mileage captured: \(Int(odometer).formatted()) mi at \(timeStr)"
-            content.sound = .default
-            content.interruptionLevel = .active
-        } else {
-            content.body = "Mileage captured: \(Int(odometer).formatted()) mi"
-            content.sound = nil
-            content.interruptionLevel = .passive
-        }
+        content.body = "Mileage captured: \(Int(odometer).formatted()) mi"
+        content.sound = nil
+        content.interruptionLevel = .passive
 
-        let identifier = captureMode == "bg_auto" ? UUID().uuidString : "mileage-capture"
         let request = UNNotificationRequest(
-            identifier: identifier,
+            identifier: "mileage-capture",
             content: content,
             trigger: nil
         )
