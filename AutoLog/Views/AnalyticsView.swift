@@ -411,8 +411,8 @@ struct AnalyticsView: View {
                 Text("Cumulative Spend")
                     .font(.headline)
                 Spacer()
-                if let total = filteredSpendData.last?.1 {
-                    let rangeSpend = total - (filteredSpendData.first?.1 ?? 0)
+                if !filteredIndividualSpend.isEmpty {
+                    let rangeSpend = filteredIndividualSpend.reduce(0.0) { $0 + $1.1 }
                     Text("Spent: $\(Int(rangeSpend).formatted())")
                         .font(.caption)
                         .foregroundStyle(.secondary)
