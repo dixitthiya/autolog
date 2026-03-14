@@ -161,8 +161,21 @@ struct DashboardView: View {
             let cat = ServiceCategory.category(for: row.serviceType)
             catMap[cat, default: []].append(row)
         }
-        return catMap.keys.sorted().map { cat in
-            (cat, catMap[cat]!.sorted { $0.serviceType < $1.serviceType })
+        let groups = catMap.map { cat, rows in
+            (cat, rows.sorted { a, b in
+                if a.status != b.status { return a.status < b.status }
+                return a.serviceType < b.serviceType
+            })
+        }
+        // Categories with critical/serviceSoon float to top, sorted by worst status; rest alphabetical
+        return groups.sorted { a, b in
+            let aWorst = a.1.first?.status ?? .noData
+            let bWorst = b.1.first?.status ?? .noData
+            let aUrgent = aWorst == .critical || aWorst == .serviceSoon
+            let bUrgent = bWorst == .critical || bWorst == .serviceSoon
+            if aUrgent != bUrgent { return aUrgent }
+            if aUrgent && bUrgent { return aWorst < bWorst }
+            return a.0 < b.0
         }
     }
 
