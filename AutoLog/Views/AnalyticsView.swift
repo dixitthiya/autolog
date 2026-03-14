@@ -14,6 +14,36 @@ struct AnalyticsView: View {
     @State private var dailyTimeFilter: DailyTimeFilter = .twoWeeks
     @State private var milesTimeFilter: TimeFilter = .threeMonths
     @State private var spendTimeFilter: TimeFilter = .threeMonths
+    @State private var comboMileageMode: ComboMileageMode = .daily
+    @State private var comboDailyFilter: ComboDailyFilter = .twoWeeks
+    @State private var comboMonthlyFilter: TimeFilter = .threeMonths
+    @State private var selectedComboDay: String?
+    @State private var selectedComboMonth: String?
+
+    private enum ComboMileageMode: String, CaseIterable {
+        case daily = "Daily"
+        case monthly = "Monthly"
+    }
+
+    private enum ComboDailyFilter: String, CaseIterable {
+        case twoWeeks = "2W"
+        case fourWeeks = "4W"
+        case threeMonths = "3M"
+        case sixMonths = "6M"
+        case oneYear = "1Y"
+        case all = "All"
+
+        var daysBack: Int? {
+            switch self {
+            case .twoWeeks: return 14
+            case .fourWeeks: return 28
+            case .threeMonths: return 90
+            case .sixMonths: return 180
+            case .oneYear: return 365
+            case .all: return nil
+            }
+        }
+    }
 
     private enum TimeFilter: String, CaseIterable {
         case threeMonths = "3M"
@@ -59,6 +89,9 @@ struct AnalyticsView: View {
                     }
                     if !monthlyMiles.isEmpty {
                         milesPerMonthChart
+                    }
+                    if !allDailyMiles.isEmpty || !monthlyMiles.isEmpty {
+                        comboMileageChart
                     }
                     if !spendData.isEmpty {
                         spendOverTimeChart
@@ -359,6 +392,223 @@ struct AnalyticsView: View {
                                     }
                                 }
                         )
+                }
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Combined Mileage Chart
+
+    private var comboDailyMiles: [(String, Double)] {
+        guard let daysBack = comboDailyFilter.daysBack else {
+            return allDailyMiles.map { ($0.0, $0.1) }
+        }
+        let cutoff = Calendar.current.date(byAdding: .day, value: -daysBack, to: Date()) ?? Date()
+        return allDailyMiles.filter { $0.2 >= cutoff }.map { ($0.0, $0.1) }
+    }
+
+    private var comboAvgDaily: Double {
+        let daysBack = comboDailyFilter.daysBack
+        let cutoff: Date
+        if let d = daysBack {
+            cutoff = Calendar.current.date(byAdding: .day, value: -d, to: Date()) ?? Date()
+        } else {
+            cutoff = .distantPast
+        }
+        let filtered = mileageRecords.filter { $0.timestamp >= cutoff }.sorted { $0.timestamp < $1.timestamp }
+        guard filtered.count >= 2, let first = filtered.first, let last = filtered.last else { return 0 }
+        let days = last.timestamp.timeIntervalSince(first.timestamp) / 86400
+        guard days > 0 else { return 0 }
+        return (last.odometerMiles - first.odometerMiles) / days
+    }
+
+    private var comboMonthlyMiles: [(String, Double)] {
+        guard let months = comboMonthlyFilter.monthsBack else { return monthlyMiles }
+        return Array(monthlyMiles.suffix(months))
+    }
+
+    private var comboAvgMonthly: Double {
+        guard !comboMonthlyMiles.isEmpty else { return 0 }
+        return comboMonthlyMiles.map(\.1).reduce(0, +) / Double(comboMonthlyMiles.count)
+    }
+
+    private var comboMileageChart: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Mileage")
+                    .font(.headline)
+                Spacer()
+                if comboMileageMode == .daily {
+                    if let selected = selectedComboDay,
+                       let data = comboDailyMiles.first(where: { $0.0 == selected }) {
+                        Text("\(data.0): \(Int(data.1).formatted()) mi")
+                            .font(.caption.bold())
+                            .foregroundStyle(.cyan)
+                    } else {
+                        Text("Avg: \(Int(comboAvgDaily).formatted()) mi/day")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    if let selected = selectedComboMonth,
+                       let data = comboMonthlyMiles.first(where: { $0.0 == selected }) {
+                        Text("\(data.0): \(Int(data.1).formatted()) mi")
+                            .font(.caption.bold())
+                            .foregroundStyle(.blue)
+                    } else {
+                        Text("Avg: \(Int(comboAvgMonthly).formatted()) mi/mo")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            // Daily/Monthly toggle
+            HStack(spacing: 0) {
+                ForEach(ComboMileageMode.allCases, id: \.self) { mode in
+                    Button {
+                        withAnimation {
+                            comboMileageMode = mode
+                            selectedComboDay = nil
+                            selectedComboMonth = nil
+                        }
+                    } label: {
+                        Text(mode.rawValue)
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
+                            .background(comboMileageMode == mode ? Color.purple : Color.clear)
+                            .foregroundStyle(comboMileageMode == mode ? .white : .secondary)
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+            .background(Color(.tertiarySystemGroupedBackground))
+            .clipShape(Capsule())
+
+            // Time filter
+            if comboMileageMode == .daily {
+                HStack(spacing: 0) {
+                    ForEach(ComboDailyFilter.allCases, id: \.self) { filter in
+                        Button {
+                            withAnimation {
+                                comboDailyFilter = filter
+                                selectedComboDay = nil
+                            }
+                        } label: {
+                            Text(filter.rawValue)
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(comboDailyFilter == filter ? Color.cyan : Color.clear)
+                                .foregroundStyle(comboDailyFilter == filter ? .white : .secondary)
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
+                .background(Color(.tertiarySystemGroupedBackground))
+                .clipShape(Capsule())
+            } else {
+                timeFilterPicker(selection: $comboMonthlyFilter)
+            }
+
+            // Chart
+            if comboMileageMode == .daily {
+                Chart {
+                    ForEach(comboDailyMiles, id: \.0) { item in
+                        BarMark(x: .value("Day", item.0), y: .value("Miles", item.1))
+                            .foregroundStyle(item.0 == selectedComboDay ? .cyan : .cyan.opacity(0.5))
+                            .cornerRadius(4)
+                        if item.0 == selectedComboDay {
+                            BarMark(x: .value("Day", item.0), y: .value("Miles", item.1))
+                                .foregroundStyle(.clear)
+                                .annotation(position: .top) {
+                                    Text("\(Int(item.1).formatted())")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.cyan)
+                                }
+                        }
+                    }
+                    RuleMark(y: .value("Average", comboAvgDaily))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                        .foregroundStyle(.orange)
+                        .annotation(position: .top, alignment: .trailing) {
+                            Text("avg \(Int(comboAvgDaily).formatted())")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                }
+                .chartYAxisLabel("miles")
+                .frame(height: 200)
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .gesture(
+                                SpatialTapGesture()
+                                    .onEnded { value in
+                                        let plotFrame = geo[proxy.plotFrame!]
+                                        let tapX = value.location.x - plotFrame.origin.x
+                                        let barWidth = plotFrame.width / CGFloat(comboDailyMiles.count)
+                                        let index = Int(tapX / barWidth)
+                                        if index >= 0 && index < comboDailyMiles.count {
+                                            let tapped = comboDailyMiles[index].0
+                                            selectedComboDay = selectedComboDay == tapped ? nil : tapped
+                                        } else {
+                                            selectedComboDay = nil
+                                        }
+                                    }
+                            )
+                    }
+                }
+            } else {
+                Chart {
+                    ForEach(comboMonthlyMiles, id: \.0) { item in
+                        BarMark(x: .value("Month", item.0), y: .value("Miles", item.1))
+                            .foregroundStyle(item.0 == selectedComboMonth ? .blue : .blue.opacity(0.5))
+                            .cornerRadius(4)
+                        if item.0 == selectedComboMonth {
+                            BarMark(x: .value("Month", item.0), y: .value("Miles", item.1))
+                                .foregroundStyle(.clear)
+                                .annotation(position: .top) {
+                                    Text("\(Int(item.1).formatted())")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.blue)
+                                }
+                        }
+                    }
+                    RuleMark(y: .value("Average", comboAvgMonthly))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                        .foregroundStyle(.orange)
+                        .annotation(position: .top, alignment: .trailing) {
+                            Text("avg \(Int(comboAvgMonthly).formatted())")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                }
+                .chartYAxisLabel("miles")
+                .frame(height: 220)
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .gesture(
+                                SpatialTapGesture()
+                                    .onEnded { value in
+                                        let plotFrame = geo[proxy.plotFrame!]
+                                        let tapX = value.location.x - plotFrame.origin.x
+                                        let barWidth = plotFrame.width / CGFloat(comboMonthlyMiles.count)
+                                        let index = Int(tapX / barWidth)
+                                        if index >= 0 && index < comboMonthlyMiles.count {
+                                            let tapped = comboMonthlyMiles[index].0
+                                            selectedComboMonth = selectedComboMonth == tapped ? nil : tapped
+                                        } else {
+                                            selectedComboMonth = nil
+                                        }
+                                    }
+                            )
+                    }
                 }
             }
         }
