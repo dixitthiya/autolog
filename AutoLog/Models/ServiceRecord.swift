@@ -39,49 +39,43 @@ struct ServiceCategory {
     let icon: String
     let types: [String]
 
-    static let all: [ServiceCategory] = [
-        ServiceCategory(name: "Brakes", icon: "circle.fill", types: [
-            "Front Rotor Thickness Reading",
-            "Rear Rotor Thickness Reading",
-            "Front Brakepad Replacement",
-            "Rear Brakepad Replacement",
-            "Brake Service",
-            "Brake Fluid Flush"
-        ]),
-        ServiceCategory(name: "Tires", icon: "circle.fill", types: [
-            "New Front Tires",
-            "New Rear Tires",
-            "Tire Rotation"
-        ]),
-        ServiceCategory(name: "Engine", icon: "circle.fill", types: [
-            "Oil & Oil Filter Change",
-            "Engine Air Filter",
-            "Cabin Air Filter",
-            "Spark Plug Replacement",
-            "Throttle Body Cleaning"
-        ]),
-        ServiceCategory(name: "Cooling", icon: "circle.fill", types: [
-            "Coolant Flush",
-            "Radiator Replacement"
-        ]),
-        ServiceCategory(name: "Transmission", icon: "gearshape.fill", types: [
-            "Transmission Fluid Change"
-        ]),
-        ServiceCategory(name: "General", icon: "car.fill", types: [
-            "Current Mileage",
-            "Car Wash/Rinse & Ceramic Detailer",
-            "Car Wash/Rinse & Cleaner Paste Wax",
-            "Car Wash/Rinse & Liquid Ceramic Wax"
-        ])
-    ]
+    // Loaded from DB; falls back to empty until populated
+    @MainActor static var all: [ServiceCategory] = []
 
-    static func category(for serviceType: String) -> String {
+    @MainActor static func loadFromDB() async {
+        do {
+            let categories = try await NeonRepository.shared.getServiceCategories()
+            if !categories.isEmpty {
+                all = categories
+                Log.db("loaded \(categories.count) service categories from DB")
+            }
+        } catch {
+            Log.db("failed to load service categories: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor static func category(for serviceType: String) -> String {
         for cat in all {
             if cat.types.contains(serviceType) {
                 return cat.name
             }
         }
         return "General"
+    }
+
+    static func iconFor(_ categoryName: String) -> String {
+        switch categoryName {
+        case "Brakes": return "circle.fill"
+        case "Tires": return "circle.fill"
+        case "Engine": return "circle.fill"
+        case "Cooling": return "snowflake"
+        case "Transmission": return "gearshape.fill"
+        case "Steering & Suspension": return "arrow.left.and.right"
+        case "Electrical": return "bolt.fill"
+        case "HVAC": return "thermometer.medium"
+        case "Exterior": return "sparkles"
+        default: return "car.fill"
+        }
     }
 
     static var categoryColor: [String: (red: Double, green: Double, blue: Double)] {
@@ -91,6 +85,10 @@ struct ServiceCategory {
             "Engine": (0.0, 0.478, 1.0),
             "Cooling": (0.204, 0.78, 0.349),
             "Transmission": (0.5, 0.5, 0.5),
+            "Steering & Suspension": (0.6, 0.4, 0.8),
+            "Electrical": (1.0, 0.6, 0.0),
+            "HVAC": (0.0, 0.7, 0.7),
+            "Exterior": (0.4, 0.7, 1.0),
             "General": (0.6, 0.6, 0.6)
         ]
     }

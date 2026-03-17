@@ -64,6 +64,9 @@ struct AutoLogApp: App {
             Log.db("schema init failed: \(error.localizedDescription)")
         }
 
+        // Load service categories from DB
+        await ServiceCategory.loadFromDB()
+
         // Sync pending records
         await syncManager.syncAll()
 

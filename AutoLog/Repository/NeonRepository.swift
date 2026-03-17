@@ -173,8 +173,17 @@ actor NeonRepository {
             DELETE FROM mileage_snapshots WHERE timestamp < now() - INTERVAL '7 days'
         """)
 
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS services (
+                id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+                service_type TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL
+            )
+        """)
+
         Log.db("schema initialized")
         try await seedThresholds()
+        try await seedServiceCategories()
     }
 
     private func seedThresholds() async throws {
@@ -217,6 +226,64 @@ actor NeonRepository {
             ])
         }
         Log.db("thresholds seeded")
+    }
+
+    private func seedServiceCategories() async throws {
+        let rows = try await execute("SELECT COUNT(*) as cnt FROM services")
+        let count = parseInt(rows.first?["cnt"]) ?? 0
+        guard count == 0 else {
+            Log.db("service categories already seeded (\(count) rows)")
+            return
+        }
+
+        Log.db("seeding service categories")
+        let categories: [(String, String)] = [
+            ("Brake Fluid Flush", "Brakes"),
+            ("Brake Service", "Brakes"),
+            ("Front Brakepad Replacement", "Brakes"),
+            ("Rear Brakepad Replacement", "Brakes"),
+            ("Front Rotor Thickness Reading", "Brakes"),
+            ("Rear Rotor Thickness Reading", "Brakes"),
+            ("Oil & Oil Filter Change", "Engine"),
+            ("Engine Air Filter", "Engine"),
+            ("Cabin Air Filter", "Engine"),
+            ("Spark Plug Replacement", "Engine"),
+            ("Throttle Body Cleaning", "Engine"),
+            ("Coolant Flush", "Cooling"),
+            ("Radiator Replacement", "Cooling"),
+            ("Transmission Fluid Change", "Transmission"),
+            ("New Front Tires", "Tires"),
+            ("New Rear Tires", "Tires"),
+            ("New All Tires", "Tires"),
+            ("Tire Rotation", "Tires"),
+            ("Tire Balance", "Tires"),
+            ("Wheel Alignment", "Steering & Suspension"),
+            ("Sway Bar Link Replacement", "Steering & Suspension"),
+            ("Outer Tie Rod Replacement", "Steering & Suspension"),
+            ("Battery Replacement", "Electrical"),
+            ("Headlight Replacement", "Electrical"),
+            ("Bulb Replacement", "Electrical"),
+            ("Starting System Check", "Electrical"),
+            ("A/C Recharge", "HVAC"),
+            ("A/C Service Valve Replacement", "HVAC"),
+            ("Exterior Wash & Ceramic Detail", "Exterior"),
+            ("Exterior Wash & Paste Wax", "Exterior"),
+            ("Exterior Wash & Ceramic Wax", "Exterior"),
+            ("Current Mileage", "General"),
+            ("Parts Purchase", "General"),
+            ("Tag Renewal", "General"),
+            ("Vehicle Inspection", "General"),
+            ("Washer Fluid Reservoir Replacement", "General"),
+        ]
+
+        for (serviceType, category) in categories {
+            try await executeNoResult("""
+                INSERT INTO services (id, service_type, category)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (service_type) DO NOTHING
+            """, params: [UUID().uuidString, serviceType, category])
+        }
+        Log.db("service categories seeded (\(categories.count) rows)")
     }
 
     // MARK: - Mileage Records
@@ -462,6 +529,21 @@ actor NeonRepository {
     }
 
     // MARK: - Thresholds
+
+    func getServiceCategories() async throws -> [ServiceCategory] {
+        let rows = try await execute("SELECT service_type, category FROM services ORDER BY category, service_type")
+        var catMap: [String: [String]] = [:]
+        var catOrder: [String] = []
+        for row in rows {
+            guard let serviceType = parseString(row["service_type"]),
+                  let category = parseString(row["category"]) else { continue }
+            if catMap[category] == nil { catOrder.append(category) }
+            catMap[category, default: []].append(serviceType)
+        }
+        return catOrder.map { cat in
+            ServiceCategory(name: cat, icon: ServiceCategory.iconFor(cat), types: catMap[cat] ?? [])
+        }
+    }
 
     func getThresholds() async throws -> [ServiceThreshold] {
         let rows = try await execute("SELECT * FROM service_thresholds")

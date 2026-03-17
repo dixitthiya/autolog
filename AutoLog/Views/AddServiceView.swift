@@ -5,7 +5,7 @@ struct AddServiceView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var selectedCategory = ServiceCategory.all[0]
+    @State private var selectedCategory: ServiceCategory?
     @State private var selectedType = ""
     @State private var date = Date()
     @State private var odometerText = ""
@@ -25,16 +25,18 @@ struct AddServiceView: View {
                 Section("Service") {
                     Picker("Category", selection: $selectedCategory) {
                         ForEach(ServiceCategory.all, id: \.name) { cat in
-                            Text(cat.name).tag(cat)
+                            Text(cat.name).tag(Optional(cat))
                         }
                     }
                     .onChange(of: selectedCategory) { _, newCat in
-                        selectedType = newCat.types.first ?? ""
+                        selectedType = newCat?.types.first ?? ""
                     }
 
-                    Picker("Service Type", selection: $selectedType) {
-                        ForEach(selectedCategory.types, id: \.self) { type in
-                            Text(type).tag(type)
+                    if let cat = selectedCategory {
+                        Picker("Service Type", selection: $selectedType) {
+                            ForEach(cat.types, id: \.self) { type in
+                                Text(type).tag(type)
+                            }
                         }
                     }
                 }
@@ -82,7 +84,10 @@ struct AddServiceView: View {
     }
 
     private func loadDefaults() async {
-        selectedType = selectedCategory.types.first ?? ""
+        if selectedCategory == nil, let first = ServiceCategory.all.first {
+            selectedCategory = first
+            selectedType = first.types.first ?? ""
+        }
         if let latest = try? await NeonRepository.shared.getLatestMileageRecord() {
             odometerText = String(Int(latest.odometerMiles))
         }
@@ -97,7 +102,7 @@ struct AddServiceView: View {
 
         let record = ServiceRecord.new(
             serviceType: selectedType,
-            category: selectedCategory.name,
+            category: selectedCategory?.name ?? "General",
             odometer: odometer,
             date: date,
             rotorThickness: Double(rotorText),
