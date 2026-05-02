@@ -9,6 +9,7 @@ struct AnalyticsView: View {
     @State private var errorMessage: String?
     @State private var selectedRotorDate: Date?
     @State private var selectedSpendMonth: String?
+    @State private var spendScrubValue: String?
     @State private var spendTimeFilter: TimeFilter = .threeMonths
     @State private var comboMileageMode: ComboMileageMode = .daily
     @State private var comboDailyFilter: ComboDailyFilter = .twoWeeks
@@ -465,10 +466,22 @@ struct AnalyticsView: View {
             spendBarChart
 
             spendLineItems
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(.tertiarySystemGroupedBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .onChange(of: spendScrubValue) { _, newValue in
+            if let newValue = newValue {
+                selectedSpendMonth = newValue
+            }
+        }
+        .onChange(of: spendTimeFilter) { _, _ in
+            selectedSpendMonth = nil
+        }
     }
 
     private var filteredSpendRecords: [ServiceRecord] {
@@ -578,9 +591,12 @@ struct AnalyticsView: View {
 
         if spendTimeFilter == .all && filteredMonthlySpend.count > 6 {
             // Scrollable: tap overlay would block horizontal scroll, so rely on
-            // chartXSelection (activates on long-press / short drag).
+            // chartXSelection (activates on long-press / short drag). The binding
+            // is a scrub tracker that clears on release; an onChange listener at
+            // the parent view mirrors non-nil values into selectedSpendMonth so
+            // the selection persists after the finger lifts.
             chart
-                .chartXSelection(value: $selectedSpendMonth)
+                .chartXSelection(value: $spendScrubValue)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: 6)
                 .chartScrollPosition(initialX: filteredMonthlySpend[filteredMonthlySpend.count - 6].label)
