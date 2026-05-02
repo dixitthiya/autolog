@@ -16,8 +16,11 @@ struct DashboardView: View {
                 List {
                     headerSection
                     bleSection
-                    if !dashboardRows.isEmpty {
-                        statusSection
+                    if !attentionRows.isEmpty {
+                        attentionSection
+                    }
+                    if !nonUrgentByCategory.isEmpty {
+                        categorySection
                     }
                 }
                 .refreshable { await loadDashboard() }
@@ -145,8 +148,16 @@ struct DashboardView: View {
         return bleManager.connectionState == .disconnected ? .secondary : .blue
     }
 
-    private var statusSection: some View {
-        ForEach(groupedByCategory, id: \.0) { category, rows in
+    private var attentionSection: some View {
+        Section(header: Text("Needs Attention")) {
+            ForEach(attentionRows) { row in
+                DashboardRowView(row: row)
+            }
+        }
+    }
+
+    private var categorySection: some View {
+        ForEach(nonUrgentByCategory, id: \.0) { category, rows in
             Section(header: Text(category)) {
                 ForEach(rows) { row in
                     DashboardRowView(row: row)
@@ -155,28 +166,32 @@ struct DashboardView: View {
         }
     }
 
-    private var groupedByCategory: [(String, [DashboardRow])] {
+    private var attentionRows: [DashboardRow] {
+        dashboardRows
+            .filter { $0.status == .critical || $0.status == .serviceSoon }
+            .sorted { a, b in
+                if a.status != b.status { return a.status < b.status }
+                let aUrgency = a.milesToCritical ?? .greatestFiniteMagnitude
+                let bUrgency = b.milesToCritical ?? .greatestFiniteMagnitude
+                if aUrgency != bUrgency { return aUrgency < bUrgency }
+                return a.serviceType < b.serviceType
+            }
+    }
+
+    private var nonUrgentByCategory: [(String, [DashboardRow])] {
         var catMap: [String: [DashboardRow]] = [:]
-        for row in dashboardRows {
+        for row in dashboardRows where row.status != .critical && row.status != .serviceSoon {
             let cat = ServiceCategory.category(for: row.serviceType)
             catMap[cat, default: []].append(row)
         }
-        let groups = catMap.map { cat, rows in
-            (cat, rows.sorted { a, b in
-                if a.status != b.status { return a.status < b.status }
-                return a.serviceType < b.serviceType
-            })
-        }
-        // Categories with critical/serviceSoon float to top, sorted by worst status; rest alphabetical
-        return groups.sorted { a, b in
-            let aWorst = a.1.first?.status ?? .noData
-            let bWorst = b.1.first?.status ?? .noData
-            let aUrgent = aWorst == .critical || aWorst == .serviceSoon
-            let bUrgent = bWorst == .critical || bWorst == .serviceSoon
-            if aUrgent != bUrgent { return aUrgent }
-            if aUrgent && bUrgent { return aWorst < bWorst }
-            return a.0 < b.0
-        }
+        return catMap
+            .map { cat, rows in
+                (cat, rows.sorted { a, b in
+                    if a.status != b.status { return a.status < b.status }
+                    return a.serviceType < b.serviceType
+                })
+            }
+            .sorted { $0.0 < $1.0 }
     }
 
     private var offlineBanner: some View {

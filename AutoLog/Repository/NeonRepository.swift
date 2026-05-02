@@ -604,7 +604,13 @@ actor NeonRepository {
             ))
         }
 
-        return rows.sorted { $0.status < $1.status }
+        return rows.sorted { a, b in
+            if a.status != b.status { return a.status < b.status }
+            let aUrgency = a.milesToCritical ?? .greatestFiniteMagnitude
+            let bUrgency = b.milesToCritical ?? .greatestFiniteMagnitude
+            if aUrgency != bUrgency { return aUrgency < bUrgency }
+            return a.serviceType < b.serviceType
+        }
     }
 
     // MARK: - Parsing Helpers
