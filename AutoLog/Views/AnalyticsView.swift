@@ -964,14 +964,16 @@ struct AnalyticsView: View {
 
     private enum ProjectionStatus: Comparable {
         case overdue
+        case due
         case projected(Date)
         case noData
 
         var sortOrder: Int {
             switch self {
             case .overdue: return 0
-            case .projected: return 1
-            case .noData: return 2
+            case .due: return 1
+            case .projected: return 2
+            case .noData: return 3
             }
         }
     }
@@ -1024,37 +1026,40 @@ struct AnalyticsView: View {
                 continue
             }
 
-            var milesDaysUntil: Double?
-            if let milesWarning = threshold.milesWarning {
-                let milesSince = currentMileage - lastService.odometerMiles
-                let milesRemaining = milesWarning - milesSince
-                if velocity > 0 {
-                    milesDaysUntil = milesRemaining / velocity
-                } else {
-                    milesDaysUntil = milesRemaining > 0 ? nil : -1
+            let milesSince = currentMileage - lastService.odometerMiles
+            let daysSince = Date().timeIntervalSince(lastService.timestamp) / 86400
+
+            func daysUntil(milesThreshold: Double?, daysThreshold: Int?) -> Double? {
+                var milesDays: Double?
+                if let m = milesThreshold {
+                    let remaining = m - milesSince
+                    if velocity > 0 {
+                        milesDays = remaining / velocity
+                    } else {
+                        milesDays = remaining > 0 ? nil : -1
+                    }
+                }
+                var timeDays: Double?
+                if let d = daysThreshold {
+                    timeDays = Double(d) - daysSince
+                }
+                switch (milesDays, timeDays) {
+                case let (m?, t?): return min(m, t)
+                case let (m?, nil): return m
+                case let (nil, t?): return t
+                case (nil, nil): return nil
                 }
             }
 
-            var timeDaysUntil: Double?
-            if let daysWarning = threshold.daysWarning {
-                let daysSince = Date().timeIntervalSince(lastService.timestamp) / 86400
-                timeDaysUntil = Double(daysWarning) - daysSince
-            }
+            let warningDays = daysUntil(milesThreshold: threshold.milesWarning, daysThreshold: threshold.daysWarning)
+            let criticalDays = daysUntil(milesThreshold: threshold.milesCritical, daysThreshold: threshold.daysCritical)
 
-            let daysUntil: Double?
-            switch (milesDaysUntil, timeDaysUntil) {
-            case let (m?, t?): daysUntil = min(m, t)
-            case let (m?, nil): daysUntil = m
-            case let (nil, t?): daysUntil = t
-            case (nil, nil): daysUntil = nil
-            }
-
-            if let daysUntil = daysUntil {
-                if daysUntil <= 0 {
-                    results.append((threshold.serviceType, .overdue))
-                } else if let date = Calendar.current.date(byAdding: .day, value: Int(daysUntil), to: Date()) {
-                    results.append((threshold.serviceType, .projected(date)))
-                }
+            if let cd = criticalDays, cd <= 0 {
+                results.append((threshold.serviceType, .overdue))
+            } else if let wd = warningDays, wd <= 0 {
+                results.append((threshold.serviceType, .due))
+            } else if let wd = warningDays, let date = Calendar.current.date(byAdding: .day, value: Int(wd), to: Date()) {
+                results.append((threshold.serviceType, .projected(date)))
             } else {
                 results.append((threshold.serviceType, .noData))
             }
@@ -1100,6 +1105,14 @@ struct AnalyticsView: View {
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
                                 .background(.red)
+                                .clipShape(Capsule())
+                        case .due:
+                            Text("DUE")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(ServiceStatus.serviceSoon.color)
                                 .clipShape(Capsule())
                         case .projected(let date):
                             Text(date.formatted(date: .abbreviated, time: .omitted))
