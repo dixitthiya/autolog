@@ -575,31 +575,35 @@ struct AnalyticsView: View {
         }
         .chartYAxisLabel("$")
         .frame(height: 220)
-        .chartOverlay { proxy in
-            GeometryReader { geo in
-                Rectangle().fill(.clear).contentShape(Rectangle())
-                    .simultaneousGesture(
-                        SpatialTapGesture()
-                            .onEnded { value in
-                                let origin = geo[proxy.plotFrame!].origin
-                                let relativeX = value.location.x - origin.x
-                                if let label: String = proxy.value(atX: relativeX) {
-                                    selectedSpendMonth = selectedSpendMonth == label ? nil : label
-                                } else {
-                                    selectedSpendMonth = nil
-                                }
-                            }
-                    )
-            }
-        }
 
         if spendTimeFilter == .all && filteredMonthlySpend.count > 6 {
+            // Scrollable: tap overlay would block horizontal scroll, so rely on
+            // chartXSelection (activates on long-press / short drag).
             chart
+                .chartXSelection(value: $selectedSpendMonth)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: 6)
                 .chartScrollPosition(initialX: filteredMonthlySpend[filteredMonthlySpend.count - 6].label)
         } else {
+            // Non-scrollable: tap overlay gives quick-tap selection.
             chart
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .gesture(
+                                SpatialTapGesture()
+                                    .onEnded { value in
+                                        let origin = geo[proxy.plotFrame!].origin
+                                        let relativeX = value.location.x - origin.x
+                                        if let label: String = proxy.value(atX: relativeX) {
+                                            selectedSpendMonth = selectedSpendMonth == label ? nil : label
+                                        } else {
+                                            selectedSpendMonth = nil
+                                        }
+                                    }
+                            )
+                    }
+                }
         }
     }
 
