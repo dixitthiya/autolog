@@ -7,12 +7,8 @@ struct AnalyticsView: View {
     @State private var thresholds: [ServiceThreshold] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var selectedMonth: String?
-    @State private var selectedDay: String?
-    @State private var selectedSpendDate: Date?
     @State private var selectedRotorDate: Date?
-    @State private var dailyTimeFilter: DailyTimeFilter = .twoWeeks
-    @State private var milesTimeFilter: TimeFilter = .threeMonths
+    @State private var selectedSpendMonth: String?
     @State private var spendTimeFilter: TimeFilter = .threeMonths
     @State private var comboMileageMode: ComboMileageMode = .daily
     @State private var comboDailyFilter: ComboDailyFilter = .twoWeeks
@@ -61,40 +57,16 @@ struct AnalyticsView: View {
         }
     }
 
-    private enum DailyTimeFilter: String, CaseIterable {
-        case twoWeeks = "2W"
-        case fourWeeks = "4W"
-        case threeMonths = "3M"
-        case sixMonths = "6M"
-        case oneYear = "1Y"
-
-        var daysBack: Int {
-            switch self {
-            case .twoWeeks: return 14
-            case .fourWeeks: return 28
-            case .threeMonths: return 90
-            case .sixMonths: return 180
-            case .oneYear: return 365
-            }
-        }
-    }
-
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
                     projectedServiceDates
-                    if !allDailyMiles.isEmpty {
-                        dailyMilesChart
-                    }
-                    if !monthlyMiles.isEmpty {
-                        milesPerMonthChart
-                    }
                     if !allDailyMiles.isEmpty || !monthlyMiles.isEmpty {
                         comboMileageChart
                     }
-                    if !spendData.isEmpty {
-                        spendOverTimeChart
+                    if !monthlySpendData.isEmpty {
+                        monthlySpendChart
                     }
                     if !frontRotorData.isEmpty || !rearRotorData.isEmpty {
                         rotorWearChart
@@ -147,94 +119,6 @@ struct AnalyticsView: View {
         return result
     }
 
-    private var dailyMiles: [(String, Double)] {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -dailyTimeFilter.daysBack, to: Date()) ?? Date()
-        return allDailyMiles.filter { $0.2 >= cutoff }.map { ($0.0, $0.1) }
-    }
-
-    private var avgDailyMiles: Double {
-        // Use same velocity method as projected service: (last - first) / days
-        let cutoff = Calendar.current.date(byAdding: .day, value: -dailyTimeFilter.daysBack, to: Date()) ?? Date()
-        let filtered = mileageRecords.filter { $0.timestamp >= cutoff }.sorted { $0.timestamp < $1.timestamp }
-        guard filtered.count >= 2, let first = filtered.first, let last = filtered.last else { return 0 }
-        let days = last.timestamp.timeIntervalSince(first.timestamp) / 86400
-        guard days > 0 else { return 0 }
-        return (last.odometerMiles - first.odometerMiles) / days
-    }
-
-    private var dailyMilesChart: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Daily Miles")
-                    .font(.headline)
-                Spacer()
-                if let selected = selectedDay,
-                   let data = dailyMiles.first(where: { $0.0 == selected }) {
-                    Text("\(data.0): \(Int(data.1).formatted()) mi")
-                        .font(.caption.bold())
-                        .foregroundStyle(.cyan)
-                } else {
-                    Text("Avg: \(Int(avgDailyMiles).formatted()) mi")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            dailyTimeFilterPicker
-
-            Chart {
-                ForEach(dailyMiles, id: \.0) { item in
-                    BarMark(x: .value("Day", item.0), y: .value("Miles", item.1))
-                        .foregroundStyle(item.0 == selectedDay ? .cyan : .cyan.opacity(0.5))
-                        .cornerRadius(4)
-                    if item.0 == selectedDay {
-                        BarMark(x: .value("Day", item.0), y: .value("Miles", item.1))
-                            .foregroundStyle(.clear)
-                            .annotation(position: .top) {
-                                Text("\(Int(item.1).formatted())")
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(.cyan)
-                            }
-                    }
-                }
-
-                RuleMark(y: .value("Average", avgDailyMiles))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
-                    .foregroundStyle(.orange)
-                    .annotation(position: .top, alignment: .trailing) {
-                        Text("avg \(Int(avgDailyMiles).formatted())")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-            }
-            .chartYAxisLabel("miles")
-            .frame(height: 200)
-            .chartOverlay { proxy in
-                GeometryReader { geo in
-                    Rectangle().fill(.clear).contentShape(Rectangle())
-                        .gesture(
-                            SpatialTapGesture()
-                                .onEnded { value in
-                                    let plotFrame = geo[proxy.plotFrame!]
-                                    let tapX = value.location.x - plotFrame.origin.x
-                                    let barWidth = plotFrame.width / CGFloat(dailyMiles.count)
-                                    let index = Int(tapX / barWidth)
-                                    if index >= 0 && index < dailyMiles.count {
-                                        let tapped = dailyMiles[index].0
-                                        selectedDay = selectedDay == tapped ? nil : tapped
-                                    } else {
-                                        selectedDay = nil
-                                    }
-                                }
-                        )
-                }
-            }
-        }
-        .padding()
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
     // MARK: - Miles Per Month
 
     private var monthlyMiles: [(String, Double)] {
@@ -273,40 +157,6 @@ struct AnalyticsView: View {
         return result
     }
 
-    private var filteredMonthlyMiles: [(String, Double)] {
-        guard let months = milesTimeFilter.monthsBack else { return monthlyMiles }
-        let count = monthlyMiles.count
-        return Array(monthlyMiles.suffix(months))
-    }
-
-    private var avgMonthlyMiles: Double {
-        guard !filteredMonthlyMiles.isEmpty else { return 0 }
-        return filteredMonthlyMiles.map(\.1).reduce(0, +) / Double(filteredMonthlyMiles.count)
-    }
-
-    private var dailyTimeFilterPicker: some View {
-        HStack(spacing: 0) {
-            ForEach(DailyTimeFilter.allCases, id: \.self) { filter in
-                Button {
-                    withAnimation {
-                        dailyTimeFilter = filter
-                        selectedDay = nil
-                    }
-                } label: {
-                    Text(filter.rawValue)
-                        .font(.caption2.bold())
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(dailyTimeFilter == filter ? Color.cyan : Color.clear)
-                        .foregroundStyle(dailyTimeFilter == filter ? .white : .secondary)
-                        .clipShape(Capsule())
-                }
-            }
-        }
-        .background(Color(.tertiarySystemGroupedBackground))
-        .clipShape(Capsule())
-    }
-
     private func timeFilterPicker(selection: Binding<TimeFilter>) -> some View {
         HStack(spacing: 0) {
             ForEach(TimeFilter.allCases, id: \.self) { filter in
@@ -325,79 +175,6 @@ struct AnalyticsView: View {
         }
         .background(Color(.tertiarySystemGroupedBackground))
         .clipShape(Capsule())
-    }
-
-    private var milesPerMonthChart: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Miles Per Month")
-                    .font(.headline)
-                Spacer()
-                if let selected = selectedMonth,
-                   let data = filteredMonthlyMiles.first(where: { $0.0 == selected }) {
-                    Text("\(data.0): \(Int(data.1).formatted()) mi")
-                        .font(.caption.bold())
-                        .foregroundStyle(.blue)
-                } else {
-                    Text("Avg: \(Int(avgMonthlyMiles).formatted()) mi")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            timeFilterPicker(selection: $milesTimeFilter)
-
-            Chart {
-                ForEach(filteredMonthlyMiles, id: \.0) { item in
-                    BarMark(x: .value("Month", item.0), y: .value("Miles", item.1))
-                        .foregroundStyle(item.0 == selectedMonth ? .blue : .blue.opacity(0.5))
-                        .cornerRadius(4)
-                    if item.0 == selectedMonth {
-                        BarMark(x: .value("Month", item.0), y: .value("Miles", item.1))
-                            .foregroundStyle(.clear)
-                            .annotation(position: .top) {
-                                Text("\(Int(item.1).formatted())")
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(.blue)
-                            }
-                    }
-                }
-
-                RuleMark(y: .value("Average", avgMonthlyMiles))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
-                    .foregroundStyle(.orange)
-                    .annotation(position: .top, alignment: .trailing) {
-                        Text("avg \(Int(avgMonthlyMiles).formatted())")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                    }
-            }
-            .chartYAxisLabel("miles")
-            .frame(height: 220)
-            .chartOverlay { proxy in
-                GeometryReader { geo in
-                    Rectangle().fill(.clear).contentShape(Rectangle())
-                        .gesture(
-                            SpatialTapGesture()
-                                .onEnded { value in
-                                    let plotFrame = geo[proxy.plotFrame!]
-                                    let tapX = value.location.x - plotFrame.origin.x
-                                    let barWidth = plotFrame.width / CGFloat(filteredMonthlyMiles.count)
-                                    let index = Int(tapX / barWidth)
-                                    if index >= 0 && index < filteredMonthlyMiles.count {
-                                        let tapped = filteredMonthlyMiles[index].0
-                                        selectedMonth = selectedMonth == tapped ? nil : tapped
-                                    } else {
-                                        selectedMonth = nil
-                                    }
-                                }
-                        )
-                }
-            }
-        }
-        .padding()
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Combined Mileage Chart
@@ -617,53 +394,67 @@ struct AnalyticsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    // MARK: - Spend Over Time
+    // MARK: - Monthly Spend
 
-    private var spendData: [(Date, Double)] {
-        let withAmount = serviceRecords
-            .compactMap { r -> (Date, Double)? in
-                guard let amount = r.amount, amount > 0 else { return nil }
-                return (r.timestamp, amount)
-            }
-            .sorted { $0.0 < $1.0 }
+    private var monthlySpendData: [(label: String, total: Double, monthStart: Date)] {
+        let cal = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM ''yy"
 
-        var cumulative = 0.0
-        return withAmount.map { item in
-            cumulative += item.1
-            return (item.0, cumulative)
+        var byMonth: [Date: Double] = [:]
+        for r in serviceRecords {
+            guard let amount = r.amount, amount > 0 else { continue }
+            let comps = cal.dateComponents([.year, .month], from: r.timestamp)
+            guard let monthStart = cal.date(from: comps) else { continue }
+            byMonth[monthStart, default: 0] += amount
         }
+        return byMonth
+            .map { (label: formatter.string(from: $0.key), total: $0.value, monthStart: $0.key) }
+            .sorted { $0.monthStart < $1.monthStart }
     }
 
-    private var filteredSpendData: [(Date, Double)] {
-        guard let months = spendTimeFilter.monthsBack else { return spendData }
-        let cutoff = Calendar.current.date(byAdding: .month, value: -months, to: Date()) ?? Date()
-        return spendData.filter { $0.0 >= cutoff }
+    private var filteredMonthlySpend: [(label: String, total: Double, monthStart: Date)] {
+        let cal = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM ''yy"
+
+        guard let nowMonthStart = cal.date(from: cal.dateComponents([.year, .month], from: Date())) else { return [] }
+
+        let actualMap = Dictionary(uniqueKeysWithValues: monthlySpendData.map { ($0.monthStart, $0.total) })
+
+        let startMonth: Date
+        if let months = spendTimeFilter.monthsBack {
+            startMonth = cal.date(byAdding: .month, value: -(months - 1), to: nowMonthStart) ?? nowMonthStart
+        } else {
+            guard let earliest = monthlySpendData.first?.monthStart else { return [] }
+            startMonth = earliest
+        }
+
+        var result: [(label: String, total: Double, monthStart: Date)] = []
+        var current = startMonth
+        while current <= nowMonthStart {
+            let total = actualMap[current] ?? 0
+            result.append((label: formatter.string(from: current), total: total, monthStart: current))
+            guard let next = cal.date(byAdding: .month, value: 1, to: current) else { break }
+            current = next
+        }
+        return result
     }
 
-    private var filteredIndividualSpend: [(Date, Double, String)] {
-        guard let months = spendTimeFilter.monthsBack else { return individualSpend }
-        let cutoff = Calendar.current.date(byAdding: .month, value: -months, to: Date()) ?? Date()
-        return individualSpend.filter { $0.0 >= cutoff }
-    }
-
-    private var individualSpend: [(Date, Double, String)] {
-        serviceRecords
-            .compactMap { r -> (Date, Double, String)? in
-                guard let amount = r.amount, amount > 0 else { return nil }
-                return (r.timestamp, amount, r.serviceType)
-            }
-            .sorted { $0.0 < $1.0 }
-    }
-
-    private var spendOverTimeChart: some View {
+    private var monthlySpendChart: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Cumulative Spend")
+                Text("Monthly Spend")
                     .font(.headline)
                 Spacer()
-                if !filteredIndividualSpend.isEmpty {
-                    let rangeSpend = filteredIndividualSpend.reduce(0.0) { $0 + $1.1 }
-                    Text("Spent: $\(Int(rangeSpend).formatted())")
+                if let selected = selectedSpendMonth,
+                   let item = filteredMonthlySpend.first(where: { $0.label == selected }) {
+                    Text("\(item.label): $\(Int(item.total).formatted())")
+                        .font(.caption.bold())
+                        .foregroundStyle(.green)
+                } else {
+                    let total = filteredMonthlySpend.reduce(0.0) { $0 + $1.total }
+                    Text("Total: $\(Int(total).formatted())")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -671,76 +462,59 @@ struct AnalyticsView: View {
 
             timeFilterPicker(selection: $spendTimeFilter)
 
-            // Selected point detail
-            if let selected = selectedSpendDate,
-               let closest = filteredSpendData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }),
-               let individual = filteredIndividualSpend.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) {
-                HStack {
-                    Text(individual.2)
-                        .font(.caption)
-                    Spacer()
-                    Text("$\(Int(individual.1)) | Total: $\(Int(closest.1))")
-                        .font(.caption.bold())
-                        .foregroundStyle(.green)
-                }
-                .padding(.vertical, 2)
-            }
-
-            Chart {
-                ForEach(filteredSpendData, id: \.0) { point in
-                    LineMark(x: .value("Date", point.0), y: .value("$", point.1))
-                        .foregroundStyle(.green)
-                        .interpolationMethod(.monotone)
-                    AreaMark(x: .value("Date", point.0), y: .value("$", point.1))
-                        .foregroundStyle(.green.opacity(0.1))
-                        .interpolationMethod(.monotone)
-                    PointMark(x: .value("Date", point.0), y: .value("$", point.1))
-                        .foregroundStyle(.green)
-                        .symbolSize(selectedSpendDate != nil && isClosestSpend(point.0) ? 80 : 30)
-                        .annotation(position: .top) {
-                            Text("$\(Int(point.1))")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.secondary)
-                        }
-                }
-            }
-            .chartXAxis {
-                AxisMarks(values: .automatic) { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let date = value.as(Date.self) {
-                            Text(date.formatted(.dateTime.month(.abbreviated).year(.twoDigits)))
-                        }
-                    }
-                }
-            }
-            .chartYAxisLabel("$")
-            .frame(height: 200)
-            .chartOverlay { proxy in
-                GeometryReader { geo in
-                    Rectangle().fill(.clear).contentShape(Rectangle())
-                        .gesture(
-                            SpatialTapGesture()
-                                .onEnded { value in
-                                    let origin = geo[proxy.plotFrame!].origin
-                                    let location = CGPoint(x: value.location.x - origin.x, y: value.location.y - origin.y)
-                                    if let tappedDate: Date = proxy.value(atX: location.x) {
-                                        if selectedSpendDate != nil {
-                                            selectedSpendDate = nil
-                                        } else {
-                                            selectedSpendDate = tappedDate
-                                        }
-                                    } else {
-                                        selectedSpendDate = nil
-                                    }
-                                }
-                        )
-                }
-            }
+            spendBarChart
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private var spendBarChart: some View {
+        let chart = Chart {
+            ForEach(filteredMonthlySpend, id: \.label) { item in
+                BarMark(x: .value("Month", item.label), y: .value("$", item.total))
+                    .foregroundStyle(item.label == selectedSpendMonth ? .green : .green.opacity(0.5))
+                    .cornerRadius(4)
+                if item.label == selectedSpendMonth {
+                    BarMark(x: .value("Month", item.label), y: .value("$", item.total))
+                        .foregroundStyle(.clear)
+                        .annotation(position: .top) {
+                            Text("$\(Int(item.total).formatted())")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.green)
+                        }
+                }
+            }
+        }
+        .chartYAxisLabel("$")
+        .frame(height: 220)
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                Rectangle().fill(.clear).contentShape(Rectangle())
+                    .gesture(
+                        SpatialTapGesture()
+                            .onEnded { value in
+                                let origin = geo[proxy.plotFrame!].origin
+                                let relativeX = value.location.x - origin.x
+                                if let label: String = proxy.value(atX: relativeX) {
+                                    selectedSpendMonth = selectedSpendMonth == label ? nil : label
+                                } else {
+                                    selectedSpendMonth = nil
+                                }
+                            }
+                    )
+            }
+        }
+
+        if spendTimeFilter == .all && filteredMonthlySpend.count > 6 {
+            chart
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: 6)
+                .chartScrollPosition(initialX: filteredMonthlySpend[filteredMonthlySpend.count - 6].label)
+        } else {
+            chart
+        }
     }
 
     // MARK: - Rotor Wear Chart
@@ -939,12 +713,6 @@ struct AnalyticsView: View {
 
     private func isClosest(_ date: Date, to selected: Date, in data: [(Date, Double)]) -> Bool {
         guard let closest = data.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) else { return false }
-        return closest.0 == date
-    }
-
-    private func isClosestSpend(_ date: Date) -> Bool {
-        guard let selected = selectedSpendDate,
-              let closest = filteredSpendData.min(by: { abs($0.0.timeIntervalSince(selected)) < abs($1.0.timeIntervalSince(selected)) }) else { return false }
         return closest.0 == date
     }
 
