@@ -489,7 +489,23 @@ struct AnalyticsView: View {
         }
         .chartYAxisLabel("$")
         .frame(height: 220)
-        .chartXSelection(value: $selectedSpendMonth)
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                Rectangle().fill(.clear).contentShape(Rectangle())
+                    .simultaneousGesture(
+                        SpatialTapGesture()
+                            .onEnded { value in
+                                let origin = geo[proxy.plotFrame!].origin
+                                let relativeX = value.location.x - origin.x
+                                if let label: String = proxy.value(atX: relativeX) {
+                                    selectedSpendMonth = selectedSpendMonth == label ? nil : label
+                                } else {
+                                    selectedSpendMonth = nil
+                                }
+                            }
+                    )
+            }
+        }
 
         if spendTimeFilter == .all && filteredMonthlySpend.count > 6 {
             chart
