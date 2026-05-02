@@ -463,10 +463,96 @@ struct AnalyticsView: View {
             timeFilterPicker(selection: $spendTimeFilter)
 
             spendBarChart
+
+            spendLineItems
         }
         .padding()
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var filteredSpendRecords: [ServiceRecord] {
+        let cal = Calendar.current
+        let priced = serviceRecords.filter { ($0.amount ?? 0) > 0 }
+
+        if let selectedLabel = selectedSpendMonth,
+           let selectedItem = filteredMonthlySpend.first(where: { $0.label == selectedLabel }) {
+            let monthStart = selectedItem.monthStart
+            guard let monthEnd = cal.date(byAdding: .month, value: 1, to: monthStart) else { return [] }
+            return priced
+                .filter { $0.timestamp >= monthStart && $0.timestamp < monthEnd }
+                .sorted { $0.timestamp > $1.timestamp }
+        }
+
+        guard let nowMonthStart = cal.date(from: cal.dateComponents([.year, .month], from: Date())) else { return [] }
+        let startMonth: Date
+        if let months = spendTimeFilter.monthsBack {
+            startMonth = cal.date(byAdding: .month, value: -(months - 1), to: nowMonthStart) ?? nowMonthStart
+        } else {
+            guard let earliest = monthlySpendData.first?.monthStart else { return [] }
+            startMonth = earliest
+        }
+        return priced
+            .filter { $0.timestamp >= startMonth }
+            .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private var spendEmptyStateText: String {
+        if let selected = selectedSpendMonth {
+            return "No spending in \(selected)"
+        }
+        return "No spending in this range"
+    }
+
+    @ViewBuilder
+    private var spendLineItems: some View {
+        let items = filteredSpendRecords
+        if items.isEmpty {
+            Text(spendEmptyStateText)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else if items.count <= 10 {
+            VStack(spacing: 8) {
+                ForEach(items) { record in
+                    spendItemRow(record)
+                }
+            }
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(items) { record in
+                        spendItemRow(record)
+                    }
+                }
+            }
+            .frame(maxHeight: 500)
+        }
+    }
+
+    private func spendItemRow(_ record: ServiceRecord) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(record.serviceType)
+                    .font(.subheadline.bold())
+                    .lineLimit(1)
+                Spacer()
+                Text("$\(Int(record.amount ?? 0).formatted())")
+                    .font(.subheadline.bold())
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text(record.timestamp.formatted(date: .abbreviated, time: .omitted))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let comments = record.comments, !comments.isEmpty {
+                    Text(comments)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+        }
     }
 
     @ViewBuilder
