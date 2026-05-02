@@ -5,8 +5,16 @@ import UserNotifications
 class MileageService: ObservableObject {
     static let shared = MileageService()
 
+    private static let cachedMileageKey = "cachedCurrentMileage"
+
     @Published var lastSyncDate: Date?
-    @Published var currentMileage: Double = 0
+    @Published var currentMileage: Double = 0 {
+        didSet {
+            if currentMileage > 0 {
+                UserDefaults.standard.set(currentMileage, forKey: Self.cachedMileageKey)
+            }
+        }
+    }
     @Published var isReading = false
     @Published var obdStatus: String = ""
     @Published var needsManualEntry = false
@@ -17,7 +25,12 @@ class MileageService: ObservableObject {
     private var lastSkipTime: Date?
     private var throttleTask: Task<Void, Never>?
 
-    private init() {}
+    private init() {
+        let cached = UserDefaults.standard.double(forKey: Self.cachedMileageKey)
+        if cached > 0 {
+            currentMileage = cached
+        }
+    }
 
     func clearSkipThrottle() {
         lastSkipTime = nil
