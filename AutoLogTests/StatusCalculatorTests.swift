@@ -7,11 +7,11 @@ final class StatusCalculatorTests: XCTestCase {
 
     func testOilChange_allGood() {
         let threshold = ServiceThreshold(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             milesCritical: 7000, milesWarning: 5000
         )
         let status = StatusCalculator.calculate(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             threshold: threshold,
             milesSinceService: 3000,
             daysSinceService: 90,
@@ -23,11 +23,11 @@ final class StatusCalculatorTests: XCTestCase {
 
     func testOilChange_serviceSoon() {
         let threshold = ServiceThreshold(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             milesCritical: 7000, milesWarning: 5000
         )
         let status = StatusCalculator.calculate(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             threshold: threshold,
             milesSinceService: 5500,
             daysSinceService: 120,
@@ -39,11 +39,11 @@ final class StatusCalculatorTests: XCTestCase {
 
     func testOilChange_critical() {
         let threshold = ServiceThreshold(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             milesCritical: 7000, milesWarning: 5000
         )
         let status = StatusCalculator.calculate(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             threshold: threshold,
             milesSinceService: 7500,
             daysSinceService: 180,
@@ -225,11 +225,11 @@ final class StatusCalculatorTests: XCTestCase {
 
     func testNoServiceRecord() {
         let threshold = ServiceThreshold(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             milesCritical: 7000, milesWarning: 5000
         )
         let status = StatusCalculator.calculate(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             threshold: threshold,
             milesSinceService: 0,
             daysSinceService: 0,

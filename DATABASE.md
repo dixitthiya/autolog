@@ -56,7 +56,7 @@ All maintenance service records — oil changes, brake service, tire rotations, 
 |--------|------|----------|-------------|
 | id | TEXT | PK | UUID |
 | timestamp | TIMESTAMPTZ | NOT NULL | When the service was performed |
-| service_type | TEXT | NOT NULL | e.g. "Oil & Oil Filter Change" |
+| service_type | TEXT | NOT NULL | e.g. "Engine Oil & Filter Change" |
 | category | TEXT | NOT NULL | Grouping category |
 | odometer_miles | DOUBLE PRECISION | NOT NULL | Odometer at time of service |
 | rotor_thickness_mm | DOUBLE PRECISION | YES | Rotor measurement (brake services only) |

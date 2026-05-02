@@ -181,6 +181,27 @@ actor NeonRepository {
             )
         """)
 
+        // Rename "Oil & Oil Filter Change" -> "Engine Oil & Filter Change"
+        let migratedThresholds = try await execute("""
+            UPDATE service_thresholds SET service_type = 'Engine Oil & Filter Change'
+            WHERE service_type = 'Oil & Oil Filter Change'
+            RETURNING service_type
+        """)
+        let migratedRecords = try await execute("""
+            UPDATE service_records SET service_type = 'Engine Oil & Filter Change'
+            WHERE service_type = 'Oil & Oil Filter Change'
+            RETURNING id
+        """)
+        let migratedServices = try await execute("""
+            UPDATE services SET service_type = 'Engine Oil & Filter Change'
+            WHERE service_type = 'Oil & Oil Filter Change'
+            RETURNING service_type
+        """)
+        let totalMigrated = migratedThresholds.count + migratedRecords.count + migratedServices.count
+        if totalMigrated > 0 {
+            Log.db("migration: renamed 'Oil & Oil Filter Change' -> 'Engine Oil & Filter Change' (thresholds: \(migratedThresholds.count), records: \(migratedRecords.count), services: \(migratedServices.count))")
+        }
+
         Log.db("schema initialized")
         try await seedThresholds()
         try await seedServiceCategories()
@@ -196,7 +217,7 @@ actor NeonRepository {
 
         Log.db("seeding thresholds")
         let thresholds: [(String, Double?, Double?, Int?, Int?, Double?, Double?)] = [
-            ("Oil & Oil Filter Change", 7000, 5000, nil, nil, nil, nil),
+            ("Engine Oil & Filter Change", 7000, 5000, nil, nil, nil, nil),
             ("Tire Rotation", 7000, 5000, nil, nil, nil, nil),
             ("Engine Air Filter", 20000, 15000, 365, nil, nil, nil),
             ("Cabin Air Filter", 14000, 10000, 365, nil, nil, nil),
@@ -244,7 +265,7 @@ actor NeonRepository {
             ("Rear Brakepad Replacement", "Brakes"),
             ("Front Rotor Thickness Reading", "Brakes"),
             ("Rear Rotor Thickness Reading", "Brakes"),
-            ("Oil & Oil Filter Change", "Engine"),
+            ("Engine Oil & Filter Change", "Engine"),
             ("Engine Air Filter", "Engine"),
             ("Cabin Air Filter", "Engine"),
             ("Spark Plug Replacement", "Engine"),

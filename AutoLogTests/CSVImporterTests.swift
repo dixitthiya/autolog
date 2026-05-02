@@ -22,7 +22,7 @@ final class CSVImporterTests: XCTestCase {
     }
 
     func testServiceCategoryLookup() {
-        XCTAssertEqual(ServiceCategory.category(for: "Oil & Oil Filter Change"), "Engine")
+        XCTAssertEqual(ServiceCategory.category(for: "Engine Oil & Filter Change"), "Engine")
         XCTAssertEqual(ServiceCategory.category(for: "Tire Rotation"), "Tires")
         XCTAssertEqual(ServiceCategory.category(for: "Front Rotor Thickness Reading"), "Brakes")
         XCTAssertEqual(ServiceCategory.category(for: "Coolant Flush"), "Cooling")
@@ -40,14 +40,14 @@ final class CSVImporterTests: XCTestCase {
 
     func testServiceRecordCreation() {
         let record = ServiceRecord.new(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             category: "Engine",
             odometer: 175000,
             rotorThickness: nil,
             amount: 45.99,
             comments: "Synthetic oil"
         )
-        XCTAssertEqual(record.serviceType, "Oil & Oil Filter Change")
+        XCTAssertEqual(record.serviceType, "Engine Oil & Filter Change")
         XCTAssertEqual(record.category, "Engine")
         XCTAssertEqual(record.amount, 45.99)
         XCTAssertFalse(record.manuallyEdited)

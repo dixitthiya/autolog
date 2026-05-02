@@ -31,7 +31,7 @@ final class SyncManagerTests: XCTestCase {
 
     func testServiceRecordEncoding() {
         let record = ServiceRecord.new(
-            serviceType: "Oil & Oil Filter Change",
+            serviceType: "Engine Oil & Filter Change",
             category: "Engine",
             odometer: 175000,
             amount: 45.99,
@@ -46,7 +46,7 @@ final class SyncManagerTests: XCTestCase {
         if let data = encoded {
             let decoded = try? decoder.decode(ServiceRecord.self, from: data)
             XCTAssertNotNil(decoded)
-            XCTAssertEqual(decoded?.serviceType, "Oil & Oil Filter Change")
+            XCTAssertEqual(decoded?.serviceType, "Engine Oil & Filter Change")
             XCTAssertEqual(decoded?.amount, 45.99)
         }
     }

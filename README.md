@@ -114,7 +114,7 @@ Retry on next BLE connection or app foreground
 
 | Service | Warning | Critical |
 |---------|---------|----------|
-| Oil & Oil Filter Change | 5,000 mi | 7,000 mi |
+| Engine Oil & Filter Change | 5,000 mi | 7,000 mi |
 | Tire Rotation | 5,000 mi | 7,000 mi |
 | Engine Air Filter | 15,000 mi or 1 yr | 20,000 mi |
 | Cabin Air Filter | 10,000 mi or 1 yr | 14,000 mi |
