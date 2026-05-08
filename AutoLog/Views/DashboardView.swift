@@ -36,6 +36,17 @@ struct DashboardView: View {
                         guard focused else { return }
                         Task {
                             try? await Task.sleep(nanoseconds: 350_000_000)
+                            guard trackedSearchFocused else { return }
+                            withAnimation {
+                                proxy.scrollTo("trackedSearchField", anchor: .top)
+                            }
+                        }
+                    }
+                    .onChange(of: trackedSearch) { oldValue, newValue in
+                        guard oldValue.isEmpty && !newValue.isEmpty else { return }
+                        Task {
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            guard trackedSearchFocused else { return }
                             withAnimation {
                                 proxy.scrollTo("trackedSearchField", anchor: .top)
                             }
