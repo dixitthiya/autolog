@@ -11,25 +11,37 @@ struct DashboardView: View {
     @State private var isLoading = false
     @State private var isOffline = false
     @State private var errorMessage: String?
+    @FocusState private var trackedSearchFocused: Bool
 
     var body: some View {
         NavigationStack {
             ZStack {
-                List {
-                    headerSection
-                    bleSection
-                    if !attentionRows.isEmpty {
-                        attentionSection
+                ScrollViewReader { proxy in
+                    List {
+                        headerSection
+                        bleSection
+                        if !attentionRows.isEmpty {
+                            attentionSection
+                        }
+                        if !nonUrgentByCategory.isEmpty {
+                            categorySection
+                        }
+                        if !trackedItems.isEmpty {
+                            trackedSection
+                        }
                     }
-                    if !nonUrgentByCategory.isEmpty {
-                        categorySection
-                    }
-                    if !trackedItems.isEmpty {
-                        trackedSection
+                    .scrollDismissesKeyboard(.immediately)
+                    .refreshable { await loadDashboard() }
+                    .onChange(of: trackedSearchFocused) { _, focused in
+                        guard focused else { return }
+                        Task {
+                            try? await Task.sleep(nanoseconds: 350_000_000)
+                            withAnimation {
+                                proxy.scrollTo("trackedSearchField", anchor: .top)
+                            }
+                        }
                     }
                 }
-                .scrollDismissesKeyboard(.immediately)
-                .refreshable { await loadDashboard() }
 
                 if isLoading && dashboardRows.isEmpty {
                     ProgressView()
@@ -198,6 +210,7 @@ struct DashboardView: View {
                 .font(.subheadline)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .focused($trackedSearchFocused)
             if !trackedSearch.isEmpty {
                 Button {
                     trackedSearch = ""
@@ -208,6 +221,7 @@ struct DashboardView: View {
                 .buttonStyle(.plain)
             }
         }
+        .id("trackedSearchField")
     }
 
     private var filteredTrackedItems: [TrackedItem] {
@@ -333,7 +347,7 @@ struct TrackedItemRowView: View {
             if let comments = item.comments, !comments.isEmpty {
                 Text(comments)
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
