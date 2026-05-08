@@ -638,7 +638,7 @@ actor NeonRepository {
         let currentOdometer = try await getLatestMileageRecord()?.odometerMiles ?? 0
         let rows = try await execute("""
             SELECT DISTINCT ON (sr.service_type)
-                sr.service_type, sr.timestamp, sr.odometer_miles
+                sr.service_type, sr.timestamp, sr.odometer_miles, sr.amount, sr.comments
             FROM service_records sr
             LEFT JOIN service_thresholds st ON st.service_type = sr.service_type
             WHERE st.service_type IS NULL
@@ -655,7 +655,9 @@ actor NeonRepository {
                 serviceType: serviceType,
                 lastServiceDate: timestamp,
                 lastServiceMileage: odometer,
-                milesSince: max(0, currentOdometer - odometer)
+                milesSince: max(0, currentOdometer - odometer),
+                amount: parseDouble(row["amount"]),
+                comments: parseString(row["comments"])
             )
         }
         return items.sorted { $0.milesSince < $1.milesSince }

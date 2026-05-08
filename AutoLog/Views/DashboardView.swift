@@ -7,6 +7,7 @@ struct DashboardView: View {
 
     @State private var dashboardRows: [DashboardRow] = []
     @State private var trackedItems: [TrackedItem] = []
+    @State private var trackedSearch = ""
     @State private var isLoading = false
     @State private var isOffline = false
     @State private var errorMessage: String?
@@ -172,9 +173,48 @@ struct DashboardView: View {
 
     private var trackedSection: some View {
         Section(header: Text("Tracked")) {
-            ForEach(trackedItems) { item in
-                TrackedItemRowView(item: item)
+            if trackedItems.count >= 4 {
+                trackedSearchField
             }
+            if filteredTrackedItems.isEmpty {
+                Text("No matches")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(filteredTrackedItems) { item in
+                    TrackedItemRowView(item: item)
+                }
+            }
+        }
+    }
+
+    private var trackedSearchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Search tracked items", text: $trackedSearch)
+                .font(.subheadline)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if !trackedSearch.isEmpty {
+                Button {
+                    trackedSearch = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var filteredTrackedItems: [TrackedItem] {
+        let q = trackedSearch.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return trackedItems }
+        return trackedItems.filter { item in
+            item.serviceType.lowercased().contains(q) ||
+            (item.comments?.lowercased().contains(q) ?? false)
         }
     }
 
@@ -261,7 +301,7 @@ struct TrackedItemRowView: View {
             Text(item.serviceType)
                 .font(.subheadline.bold())
 
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Label(item.lastServiceDate.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -270,12 +310,46 @@ struct TrackedItemRowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                if let amount = item.amount {
+                    Label("$\(amount, specifier: "%.2f")", systemImage: "dollarsign.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 12) {
                 Label("\(Int(item.milesSince).formatted()) mi since", systemImage: "speedometer")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if item.daysSince > 0 {
+                    Text("\(timeLabel(item.daysSince)) ago")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let comments = item.comments, !comments.isEmpty {
+                Text(comments)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private func timeLabel(_ days: Int) -> String {
+        let months = days / 30
+        if months >= 12 {
+            let years = months / 12
+            let rem = months % 12
+            return rem > 0 ? "\(years)yr \(rem)mo" : "\(years)yr"
+        } else if months >= 1 {
+            return "\(months)mo"
+        } else {
+            return "\(days)d"
+        }
     }
 }
 

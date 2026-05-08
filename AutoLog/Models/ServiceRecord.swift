@@ -147,6 +147,12 @@ struct TrackedItem: Identifiable {
     let lastServiceDate: Date
     let lastServiceMileage: Double
     let milesSince: Double
+    let amount: Double?
+    let comments: String?
+
+    var daysSince: Int {
+        Calendar.current.dateComponents([.day], from: lastServiceDate, to: Date()).day ?? 0
+    }
 }
 
 struct ServiceThreshold: Codable {
