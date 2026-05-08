@@ -11,12 +11,14 @@ struct EditServiceView: View {
     @State private var rotorText: String
     @State private var amountText: String
     @State private var comments: String
+    @State private var selectedCategory: ServiceCategory?
+    @State private var selectedType: String
     @State private var showDeleteConfirm = false
     @State private var isSaving = false
     @State private var errorMessage: String?
 
     private var isRotorType: Bool {
-        record.serviceType.contains("Rotor Thickness")
+        selectedType.contains("Rotor Thickness")
     }
 
     init(record: ServiceRecord, onSave: @escaping () async -> Void) {
@@ -27,14 +29,32 @@ struct EditServiceView: View {
         _rotorText = State(initialValue: record.rotorThicknessMM.map { String($0) } ?? "")
         _amountText = State(initialValue: record.amount.map { String($0) } ?? "")
         _comments = State(initialValue: record.comments ?? "")
+        _selectedType = State(initialValue: record.serviceType)
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Service") {
-                    LabeledContent("Category", value: record.category)
-                    LabeledContent("Type", value: record.serviceType)
+                    Picker("Category", selection: $selectedCategory) {
+                        ForEach(ServiceCategory.all, id: \.name) { cat in
+                            Text(cat.name).tag(Optional(cat))
+                        }
+                    }
+                    .onChange(of: selectedCategory) { oldCat, newCat in
+                        guard oldCat != nil else { return }
+                        if let newCat, !newCat.types.contains(selectedType) {
+                            selectedType = newCat.types.first ?? ""
+                        }
+                    }
+
+                    if let cat = selectedCategory {
+                        Picker("Service Type", selection: $selectedType) {
+                            ForEach(cat.types, id: \.self) { type in
+                                Text(type).tag(type)
+                            }
+                        }
+                    }
                 }
 
                 Section("Details") {
@@ -71,13 +91,19 @@ struct EditServiceView: View {
             }
             .navigationTitle("Edit Service")
             .navigationBarTitleDisplayMode(.inline)
+            .task {
+                if selectedCategory == nil {
+                    selectedCategory = ServiceCategory.all.first { $0.name == record.category }
+                        ?? ServiceCategory.all.first
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
-                        .disabled(isSaving || odometerText.isEmpty)
+                        .disabled(isSaving || odometerText.isEmpty || selectedType.isEmpty)
                 }
             }
             .confirmationDialog("Delete this record?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
@@ -102,14 +128,13 @@ struct EditServiceView: View {
         }
         isSaving = true
 
-        var updated = record
-        updated = ServiceRecord(
+        let updated = ServiceRecord(
             id: record.id,
             timestamp: date,
-            serviceType: record.serviceType,
-            category: record.category,
+            serviceType: selectedType,
+            category: selectedCategory?.name ?? record.category,
             odometerMiles: odometer,
-            rotorThicknessMM: Double(rotorText),
+            rotorThicknessMM: isRotorType ? Double(rotorText) : nil,
             amount: Double(amountText),
             comments: comments.isEmpty ? nil : comments,
             manuallyEdited: true
