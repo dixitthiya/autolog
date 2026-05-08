@@ -28,6 +28,7 @@ struct DashboardView: View {
                         trackedSection
                     }
                 }
+                .scrollDismissesKeyboard(.immediately)
                 .refreshable { await loadDashboard() }
 
                 if isLoading && dashboardRows.isEmpty {

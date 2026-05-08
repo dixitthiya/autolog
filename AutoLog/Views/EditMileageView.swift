@@ -13,6 +13,7 @@ struct EditMileageView: View {
     @State private var isSaving = false
     @State private var errorMessage: String?
     @State private var hasOBDBaseline = false
+    @FocusState private var odometerFocused: Bool
 
     init(record: MileageRecord?, onSave: @escaping () async -> Void) {
         self.record = record
@@ -30,6 +31,7 @@ struct EditMileageView: View {
                     DatePicker("Date", selection: $date, displayedComponents: [.date, .hourAndMinute])
                     TextField("Odometer (miles)", text: $odometerText)
                         .keyboardType(.numberPad)
+                        .focused($odometerFocused)
                 }
 
                 if !isEditing {
@@ -56,6 +58,8 @@ struct EditMileageView: View {
             }
             .task {
                 if !isEditing {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    odometerFocused = true
                     hasOBDBaseline = await getLatestDistSinceCleared() != nil
                 }
             }
