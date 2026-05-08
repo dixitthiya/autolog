@@ -6,6 +6,7 @@ struct DashboardView: View {
     @StateObject private var syncManager = SyncManager.shared
 
     @State private var dashboardRows: [DashboardRow] = []
+    @State private var trackedItems: [TrackedItem] = []
     @State private var isLoading = false
     @State private var isOffline = false
     @State private var errorMessage: String?
@@ -21,6 +22,9 @@ struct DashboardView: View {
                     }
                     if !nonUrgentByCategory.isEmpty {
                         categorySection
+                    }
+                    if !trackedItems.isEmpty {
+                        trackedSection
                     }
                 }
                 .refreshable { await loadDashboard() }
@@ -166,6 +170,14 @@ struct DashboardView: View {
         }
     }
 
+    private var trackedSection: some View {
+        Section(header: Text("Tracked")) {
+            ForEach(trackedItems) { item in
+                TrackedItemRowView(item: item)
+            }
+        }
+    }
+
     private var attentionRows: [DashboardRow] {
         dashboardRows
             .filter { $0.status == .critical || $0.status == .serviceSoon }
@@ -228,6 +240,7 @@ struct DashboardView: View {
         isLoading = true
         do {
             dashboardRows = try await NeonRepository.shared.getDashboardData()
+            trackedItems = try await NeonRepository.shared.getTrackedItems()
             if let latest = try await NeonRepository.shared.getLatestMileageRecord() {
                 mileageService.currentMileage = latest.odometerMiles
             }
@@ -237,6 +250,32 @@ struct DashboardView: View {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+}
+
+struct TrackedItemRowView: View {
+    let item: TrackedItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(item.serviceType)
+                .font(.subheadline.bold())
+
+            HStack(spacing: 16) {
+                Label(item.lastServiceDate.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Label("\(Int(item.lastServiceMileage).formatted()) mi", systemImage: "wrench.and.screwdriver")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Label("\(Int(item.milesSince).formatted()) mi since", systemImage: "speedometer")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

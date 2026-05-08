@@ -141,6 +141,14 @@ struct DashboardRow: Identifiable {
     }
 }
 
+struct TrackedItem: Identifiable {
+    var id: String { serviceType }
+    let serviceType: String
+    let lastServiceDate: Date
+    let lastServiceMileage: Double
+    let milesSince: Double
+}
+
 struct ServiceThreshold: Codable {
     let serviceType: String
     var milesCritical: Double?

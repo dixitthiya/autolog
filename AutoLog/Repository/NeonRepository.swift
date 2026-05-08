@@ -634,6 +634,33 @@ actor NeonRepository {
         }
     }
 
+    func getTrackedItems() async throws -> [TrackedItem] {
+        let currentOdometer = try await getLatestMileageRecord()?.odometerMiles ?? 0
+        let rows = try await execute("""
+            SELECT DISTINCT ON (sr.service_type)
+                sr.service_type, sr.timestamp, sr.odometer_miles
+            FROM service_records sr
+            LEFT JOIN service_thresholds st ON st.service_type = sr.service_type
+            WHERE st.service_type IS NULL
+            ORDER BY sr.service_type, sr.timestamp DESC
+        """)
+        let items: [TrackedItem] = rows.compactMap { row in
+            guard let serviceType = parseString(row["service_type"]),
+                  let odometer = parseDouble(row["odometer_miles"]) else {
+                Log.db("failed to parse tracked item: \(row)")
+                return nil
+            }
+            let timestamp = parseDate(row["timestamp"]) ?? Date()
+            return TrackedItem(
+                serviceType: serviceType,
+                lastServiceDate: timestamp,
+                lastServiceMileage: odometer,
+                milesSince: max(0, currentOdometer - odometer)
+            )
+        }
+        return items.sorted { $0.milesSince < $1.milesSince }
+    }
+
     // MARK: - Parsing Helpers
 
     private func parseDouble(_ value: Any?) -> Double? {
