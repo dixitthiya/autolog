@@ -206,6 +206,41 @@ final class StatusCalculatorTests: XCTestCase {
         XCTAssertEqual(status, .allGood)
     }
 
+    // MARK: - Shared Threshold Rule (used by both Dashboard and Analytics)
+
+    func testSharedRule_reachedByEitherMilesOrDays() {
+        let threshold = ServiceThreshold(
+            serviceType: "Brake Service",
+            milesCritical: 22000, milesWarning: 18000,
+            daysCritical: 730, daysWarning: 365
+        )
+        // Past on miles only.
+        XCTAssertTrue(threshold.hasReachedWarning(milesSince: 19000, daysSince: 10))
+        // Past on days only.
+        XCTAssertTrue(threshold.hasReachedWarning(milesSince: 1000, daysSince: 400))
+        // Past on neither.
+        XCTAssertFalse(threshold.hasReachedWarning(milesSince: 1000, daysSince: 10))
+    }
+
+    func testSharedRule_exactBoundaryIsNotReached() {
+        let threshold = ServiceThreshold(
+            serviceType: "Tire Rotation",
+            milesCritical: 7000, milesWarning: 5000
+        )
+        XCTAssertFalse(threshold.hasReachedWarning(milesSince: 5000, daysSince: 0)) // > not >=
+        XCTAssertTrue(threshold.hasReachedWarning(milesSince: 5001, daysSince: 0))
+    }
+
+    func testSharedRule_unsetThresholdIsIgnored() {
+        // Time-only threshold: mileage is unset and must never trigger.
+        let threshold = ServiceThreshold(
+            serviceType: "Exterior Wash & Ceramic Detail",
+            daysCritical: 90, daysWarning: 60
+        )
+        XCTAssertFalse(threshold.hasReachedWarning(milesSince: 100000, daysSince: 10))
+        XCTAssertTrue(threshold.hasReachedCritical(milesSince: 0, daysSince: 100))
+    }
+
     // MARK: - Rotor Services
 
     func testFrontRotor_allGood() {

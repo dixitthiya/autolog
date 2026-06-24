@@ -32,18 +32,12 @@ struct StatusCalculator {
         miles: Double,
         days: Int
     ) -> ServiceStatus {
-        let milesCrit = threshold.milesCritical.map { miles > $0 } ?? false
-        let daysCrit = threshold.daysCritical.map { days > $0 } ?? false
-        if milesCrit || daysCrit {
+        if threshold.hasReachedCritical(milesSince: miles, daysSince: days) {
             return .critical
         }
-
-        let milesWarn = threshold.milesWarning.map { miles > $0 } ?? false
-        let daysWarn = threshold.daysWarning.map { days > $0 } ?? false
-        if milesWarn || daysWarn {
+        if threshold.hasReachedWarning(milesSince: miles, daysSince: days) {
             return .serviceSoon
         }
-
         return .allGood
     }
 

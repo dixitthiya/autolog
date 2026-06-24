@@ -164,3 +164,24 @@ struct ServiceThreshold: Codable {
     var rotorCritical: Double?
     var rotorWarning: Double?
 }
+
+extension ServiceThreshold {
+    /// The single shared "is this service past its limit?" rule.
+    /// Both the Dashboard (StatusCalculator) and Analytics (projected dates)
+    /// call this so the two screens can never disagree about due/overdue.
+    /// A limit counts as reached when EITHER the mileage or the elapsed-time
+    /// threshold is exceeded; an unset threshold is simply ignored.
+    func hasReachedCritical(milesSince: Double, daysSince: Int) -> Bool {
+        isPast(miles: milesCritical, days: daysCritical, milesSince: milesSince, daysSince: daysSince)
+    }
+
+    func hasReachedWarning(milesSince: Double, daysSince: Int) -> Bool {
+        isPast(miles: milesWarning, days: daysWarning, milesSince: milesSince, daysSince: daysSince)
+    }
+
+    private func isPast(miles: Double?, days: Int?, milesSince: Double, daysSince: Int) -> Bool {
+        let milesPast = miles.map { milesSince > $0 } ?? false
+        let daysPast = days.map { daysSince > $0 } ?? false
+        return milesPast || daysPast
+    }
+}

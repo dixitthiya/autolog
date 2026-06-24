@@ -925,17 +925,20 @@ struct AnalyticsView: View {
                 }
             }
 
-            let warningDays = daysUntil(milesThreshold: threshold.milesWarning, daysThreshold: threshold.daysWarning)
-            let criticalDays = daysUntil(milesThreshold: threshold.milesCritical, daysThreshold: threshold.daysCritical)
-
-            if let cd = criticalDays, cd <= 0 {
+            // Due/overdue uses the same shared rule as the Dashboard so the two
+            // screens can never disagree. Velocity-based projection is only
+            // needed for the not-yet-due case.
+            if threshold.hasReachedCritical(milesSince: milesSince, daysSince: Int(daysSince)) {
                 results.append((threshold.serviceType, .overdue))
-            } else if let wd = warningDays, wd <= 0 {
+            } else if threshold.hasReachedWarning(milesSince: milesSince, daysSince: Int(daysSince)) {
                 results.append((threshold.serviceType, .due))
-            } else if let wd = warningDays, let date = Calendar.current.date(byAdding: .day, value: Int(wd), to: Date()) {
-                results.append((threshold.serviceType, .projected(date)))
             } else {
-                results.append((threshold.serviceType, .noData))
+                let warningDays = daysUntil(milesThreshold: threshold.milesWarning, daysThreshold: threshold.daysWarning)
+                if let wd = warningDays, let date = Calendar.current.date(byAdding: .day, value: Int(wd), to: Date()) {
+                    results.append((threshold.serviceType, .projected(date)))
+                } else {
+                    results.append((threshold.serviceType, .noData))
+                }
             }
         }
 
