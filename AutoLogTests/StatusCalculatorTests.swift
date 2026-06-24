@@ -155,6 +155,57 @@ final class StatusCalculatorTests: XCTestCase {
         XCTAssertEqual(status, .allGood)
     }
 
+    // MARK: - Time-Only Services (no mileage threshold)
+
+    func testCeramicCoating_criticalByDaysOnly() {
+        // Car wash / ceramic coating: only a time threshold is set, no miles.
+        let threshold = ServiceThreshold(
+            serviceType: "Exterior Wash & Ceramic Detail",
+            daysCritical: 90, daysWarning: 60
+        )
+        let status = StatusCalculator.calculate(
+            serviceType: "Exterior Wash & Ceramic Detail",
+            threshold: threshold,
+            milesSinceService: 200,
+            daysSinceService: 120,
+            rotorThickness: nil,
+            hasServiceRecord: true
+        )
+        XCTAssertEqual(status, .critical)
+    }
+
+    func testCeramicCoating_serviceSoonByDaysOnly() {
+        let threshold = ServiceThreshold(
+            serviceType: "Exterior Wash & Paste Wax",
+            daysCritical: 90, daysWarning: 60
+        )
+        let status = StatusCalculator.calculate(
+            serviceType: "Exterior Wash & Paste Wax",
+            threshold: threshold,
+            milesSinceService: 200,
+            daysSinceService: 75,
+            rotorThickness: nil,
+            hasServiceRecord: true
+        )
+        XCTAssertEqual(status, .serviceSoon)
+    }
+
+    func testCeramicCoating_allGoodWithinDays() {
+        let threshold = ServiceThreshold(
+            serviceType: "Exterior Wash & Ceramic Wax",
+            daysCritical: 90, daysWarning: 60
+        )
+        let status = StatusCalculator.calculate(
+            serviceType: "Exterior Wash & Ceramic Wax",
+            threshold: threshold,
+            milesSinceService: 5000,
+            daysSinceService: 30,
+            rotorThickness: nil,
+            hasServiceRecord: true
+        )
+        XCTAssertEqual(status, .allGood)
+    }
+
     // MARK: - Rotor Services
 
     func testFrontRotor_allGood() {

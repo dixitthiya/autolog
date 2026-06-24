@@ -2,10 +2,6 @@ import Foundation
 
 struct StatusCalculator {
     private static let rotorTypes = Set(["Front Rotor Thickness Reading", "Rear Rotor Thickness Reading"])
-    private static let mileageAndTimeTypes = Set([
-        "Engine Air Filter", "Cabin Air Filter", "Brake Fluid Flush",
-        "Brake Service", "Coolant Flush", "Throttle Body Cleaning"
-    ])
 
     static func calculate(
         serviceType: String,
@@ -21,25 +17,14 @@ struct StatusCalculator {
             return calculateRotor(threshold: threshold, thickness: rotorThickness)
         }
 
-        if mileageAndTimeTypes.contains(serviceType) {
-            return calculateMileageAndTime(
-                threshold: threshold,
-                miles: milesSinceService,
-                days: daysSinceService
-            )
-        }
-
-        return calculateMileageOnly(threshold: threshold, miles: milesSinceService)
-    }
-
-    private static func calculateMileageOnly(threshold: ServiceThreshold, miles: Double) -> ServiceStatus {
-        if let critical = threshold.milesCritical, miles > critical {
-            return .critical
-        }
-        if let warning = threshold.milesWarning, miles > warning {
-            return .serviceSoon
-        }
-        return .allGood
+        // Honor whichever thresholds are actually set — miles, days, or both.
+        // A service with only a time threshold (e.g. car wash / ceramic coating)
+        // must still surface as due, matching the Analytics projection.
+        return calculateMileageAndTime(
+            threshold: threshold,
+            miles: milesSinceService,
+            days: daysSinceService
+        )
     }
 
     private static func calculateMileageAndTime(
