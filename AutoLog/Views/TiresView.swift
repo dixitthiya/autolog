@@ -178,7 +178,7 @@ struct EditTireView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var position: TirePosition?
+    @State private var position: TirePosition
     @State private var makeModel: String
     @State private var odometerText: String
     @State private var date: Date
@@ -190,7 +190,7 @@ struct EditTireView: View {
     init(tire: Tire, onSave: @escaping () async -> Void) {
         self.tire = tire
         self.onSave = onSave
-        _position = State(initialValue: tire.position)
+        _position = State(initialValue: tire.position ?? .FL)
         _makeModel = State(initialValue: tire.makeModel ?? "")
         _odometerText = State(initialValue: String(Int(tire.installOdometer)))
         _date = State(initialValue: tire.installDate)
@@ -202,9 +202,8 @@ struct EditTireView: View {
             Form {
                 Section("Tire") {
                     Picker("Corner", selection: $position) {
-                        Text("None").tag(TirePosition?.none)
                         ForEach(TirePosition.allCases) { pos in
-                            Text(pos.displayName).tag(TirePosition?.some(pos))
+                            Text(pos.displayName).tag(pos)
                         }
                     }
                     TextField("Make / model", text: $makeModel)
