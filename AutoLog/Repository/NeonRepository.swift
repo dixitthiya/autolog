@@ -231,6 +231,21 @@ actor NeonRepository {
         Log.db("schema initialized")
         try await seedThresholds()
         try await seedServiceCategories()
+
+        // Tire model migration: replace the pair/all tire types with a single
+        // corner-aware "Tire Replacement" (logged from Maintenance, which then
+        // updates the per-corner tires table). Runs AFTER seedServiceCategories
+        // so the count-guarded seed still populates a fresh DB; old records keep
+        // their labels.
+        try await executeNoResult("""
+            INSERT INTO services (id, service_type, category)
+            VALUES ($1, 'Tire Replacement', 'Tires')
+            ON CONFLICT (service_type) DO NOTHING
+        """, params: [UUID().uuidString])
+        try await executeNoResult("""
+            DELETE FROM services WHERE service_type IN ('New Front Tires', 'New Rear Tires', 'New All Tires')
+        """)
+
         try await seedTires()
     }
 
@@ -330,9 +345,7 @@ actor NeonRepository {
             ("Coolant Flush", "Cooling"),
             ("Radiator Replacement", "Cooling"),
             ("Transmission Fluid Change", "Transmission"),
-            ("New Front Tires", "Tires"),
-            ("New Rear Tires", "Tires"),
-            ("New All Tires", "Tires"),
+            ("Tire Replacement", "Tires"),
             ("Tire Rotation", "Tires"),
             ("Tire Balance", "Tires"),
             ("Wheel Alignment", "Steering & Suspension"),

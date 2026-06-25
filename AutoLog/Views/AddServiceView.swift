@@ -14,10 +14,15 @@ struct AddServiceView: View {
     @State private var comments = ""
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var rotationPattern: RotationPattern = .rearwardCross
+    @State private var replacementCorners: Set<TirePosition> = []
+    @State private var tireMakeModel = ""
 
     private var isRotorType: Bool {
         selectedType.contains("Rotor Thickness")
     }
+    private var isTireRotation: Bool { selectedType == "Tire Rotation" }
+    private var isTireReplacement: Bool { selectedType == "Tire Replacement" }
 
     var body: some View {
         NavigationStack {
@@ -38,6 +43,42 @@ struct AddServiceView: View {
                                 Text(type).tag(type)
                             }
                         }
+                    }
+                }
+
+                if isTireRotation {
+                    Section("Rotation") {
+                        Picker("Pattern", selection: $rotationPattern) {
+                            ForEach(RotationPattern.allCases) { p in
+                                Text(p.rawValue).tag(p)
+                            }
+                        }
+                        Text(rotationPattern.patternString)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if isTireReplacement {
+                    Section("Replaced tire(s)") {
+                        ForEach(TirePosition.allCases) { pos in
+                            Button {
+                                if replacementCorners.contains(pos) {
+                                    replacementCorners.remove(pos)
+                                } else {
+                                    replacementCorners.insert(pos)
+                                }
+                            } label: {
+                                HStack {
+                                    Text(pos.displayName).foregroundStyle(.primary)
+                                    Spacer()
+                                    if replacementCorners.contains(pos) {
+                                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                                    }
+                                }
+                            }
+                        }
+                        TextField("Make / model", text: $tireMakeModel)
                     }
                 }
 
@@ -67,7 +108,7 @@ struct AddServiceView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
-                        .disabled(isSaving || selectedType.isEmpty || odometerText.isEmpty)
+                        .disabled(isSaving || selectedType.isEmpty || odometerText.isEmpty || (isTireReplacement && replacementCorners.isEmpty))
                 }
             }
             .overlay(alignment: .bottom) {
@@ -107,11 +148,12 @@ struct AddServiceView: View {
             date: date,
             rotorThickness: Double(rotorText),
             amount: Double(amountText),
-            comments: comments.isEmpty ? nil : comments
+            comments: recordComments()
         )
 
         do {
             try await NeonRepository.shared.saveServiceRecord(record)
+            try await applyTireSideEffects(odometer: odometer)
             await onSave()
             dismiss()
         } catch {
@@ -119,6 +161,49 @@ struct AddServiceView: View {
             SyncManager.shared.queueServiceRecord(record)
         }
         isSaving = false
+    }
+
+    /// For a tire replacement with no comment, summarize make + corners so the
+    /// maintenance history row is still readable.
+    private func recordComments() -> String? {
+        if !comments.isEmpty { return comments }
+        if isTireReplacement {
+            let make = tireMakeModel.trimmingCharacters(in: .whitespaces)
+            let corners = TirePosition.allCases.filter { replacementCorners.contains($0) }
+                .map { $0.rawValue }.joined(separator: "/")
+            let summary = [make.isEmpty ? nil : make, corners.isEmpty ? nil : corners]
+                .compactMap { $0 }.joined(separator: " ")
+            return summary.isEmpty ? nil : summary
+        }
+        if isTireRotation {
+            return rotationPattern.patternString
+        }
+        return nil
+    }
+
+    /// Logging a rotation or replacement in Maintenance also updates the
+    /// physical tire layout so the Tires view reflects it.
+    private func applyTireSideEffects(odometer: Double) async throws {
+        if isTireRotation {
+            try await NeonRepository.shared.applyRotation(
+                mapping: rotationPattern.mapping,
+                odometer: odometer,
+                date: date,
+                pattern: rotationPattern.patternString,
+                comments: comments.isEmpty ? nil : comments
+            )
+        } else if isTireReplacement {
+            let make = tireMakeModel.trimmingCharacters(in: .whitespaces)
+            for corner in TirePosition.allCases where replacementCorners.contains(corner) {
+                try await NeonRepository.shared.replaceTire(
+                    at: corner,
+                    makeModel: make.isEmpty ? nil : make,
+                    odometer: odometer,
+                    date: date,
+                    notes: comments.isEmpty ? nil : comments
+                )
+            }
+        }
     }
 }
 

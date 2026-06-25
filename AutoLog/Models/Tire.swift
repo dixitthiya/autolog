@@ -15,9 +15,6 @@ enum TirePosition: String, Codable, CaseIterable, Identifiable {
         case .RR: return "Rear Right"
         }
     }
-
-    var isFront: Bool { self == .FL || self == .FR }
-    var frontRear: String { isFront ? "Front" : "Rear" }
 }
 
 /// A single physical tire. Mileage = currentOdometer − installOdometer (or

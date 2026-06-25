@@ -1,12 +1,13 @@
 import SwiftUI
 
+/// Read-only view of the current tire layout. Rotations and replacements are
+/// logged in Maintenance (which updates the `tires` table); this view reflects
+/// that state. Tapping a tire opens an editor for correcting its details.
 struct TiresView: View {
     @State private var tires: [Tire] = []
     @State private var currentOdometer: Double = 0
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var showReplace = false
-    @State private var showRotate = false
     @State private var selectedTire: Tire?
 
     var body: some View {
@@ -16,6 +17,7 @@ struct TiresView: View {
                     VStack(spacing: 16) {
                         odometerHeader
                         cornerGrid
+                        maintenanceHint
                         emptyHint
                     }
                     .padding()
@@ -27,26 +29,6 @@ struct TiresView: View {
                 }
             }
             .navigationTitle("Tires")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button { showReplace = true } label: {
-                            Label("Replace a tire", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                        Button { showRotate = true } label: {
-                            Label("Log rotation", systemImage: "arrow.clockwise")
-                        }
-                    } label: {
-                        Image(systemName: "plus.circle.fill").font(.title3)
-                    }
-                }
-            }
-            .sheet(isPresented: $showReplace) {
-                AddTireView(currentOdometer: currentOdometer) { await load() }
-            }
-            .sheet(isPresented: $showRotate) {
-                RotateTiresView(currentOdometer: currentOdometer) { await load() }
-            }
             .sheet(item: $selectedTire) { tire in
                 EditTireView(tire: tire) { await load() }
             }
@@ -94,10 +76,17 @@ struct TiresView: View {
             .onTapGesture { if let t = t { selectedTire = t } }
     }
 
+    private var maintenanceHint: some View {
+        Label("Log rotations and replacements in Maintenance — this view reflects them. Tap a tire to correct its details.", systemImage: "info.circle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     @ViewBuilder
     private var emptyHint: some View {
         if !isLoading && activeTires.isEmpty {
-            Text("No tires yet. Use + to replace a tire.")
+            Text("No tires yet. Add a Tire Replacement in Maintenance.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -177,206 +166,7 @@ struct TireCornerCard: View {
     }
 }
 
-// MARK: - Replace Tire
-
-struct AddTireView: View {
-    let currentOdometer: Double
-    let onSave: () async -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var position: TirePosition = .FL
-    @State private var makeModel = ""
-    @State private var odometerText = ""
-    @State private var date = Date()
-    @State private var amountText = ""
-    @State private var notes = ""
-    @State private var isSaving = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Tire") {
-                    Picker("Corner", selection: $position) {
-                        ForEach(TirePosition.allCases) { pos in
-                            Text(pos.displayName).tag(pos)
-                        }
-                    }
-                    TextField("Make / model", text: $makeModel)
-                }
-
-                Section("Details") {
-                    DatePicker("Date", selection: $date, displayedComponents: [.date])
-                    TextField("Odometer (miles)", text: $odometerText)
-                        .keyboardType(.decimalPad)
-                    TextField("Amount ($) — optional", text: $amountText)
-                        .keyboardType(.decimalPad)
-                    TextField("Notes", text: $notes, axis: .vertical)
-                        .lineLimit(3)
-                }
-            }
-            .navigationTitle("Replace Tire")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }
-                        .disabled(isSaving || odometerText.isEmpty)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage { TireToast(message: msg) { errorMessage = nil } }
-            }
-            .task {
-                if odometerText.isEmpty && currentOdometer > 0 {
-                    odometerText = String(Int(currentOdometer))
-                }
-            }
-        }
-    }
-
-    private func save() async {
-        guard let odometer = Double(odometerText) else {
-            errorMessage = "Invalid odometer value"
-            return
-        }
-        isSaving = true
-        let make = makeModel.trimmingCharacters(in: .whitespaces)
-        do {
-            try await NeonRepository.shared.replaceTire(
-                at: position,
-                makeModel: make.isEmpty ? nil : make,
-                odometer: odometer,
-                date: date,
-                notes: notes.isEmpty ? nil : notes
-            )
-            // Keep the Monthly Spend chart working: log a cost record if entered.
-            if let amount = Double(amountText), amount > 0 {
-                let record = ServiceRecord.new(
-                    serviceType: "New \(position.frontRear) Tires",
-                    category: "Tires",
-                    odometer: odometer,
-                    date: date,
-                    amount: amount,
-                    comments: "\(make.isEmpty ? "Tire" : make) — \(position.displayName)"
-                )
-                do {
-                    try await NeonRepository.shared.saveServiceRecord(record)
-                } catch {
-                    SyncManager.shared.queueServiceRecord(record)
-                }
-            }
-            await onSave()
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isSaving = false
-    }
-}
-
-// MARK: - Log Rotation
-
-struct RotateTiresView: View {
-    let currentOdometer: Double
-    let onSave: () async -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var pattern: RotationPattern = .rearwardCross
-    @State private var odometerText = ""
-    @State private var date = Date()
-    @State private var comments = ""
-    @State private var logInterval = true
-    @State private var isSaving = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Pattern") {
-                    Picker("Pattern", selection: $pattern) {
-                        ForEach(RotationPattern.allCases) { p in
-                            Text(p.rawValue).tag(p)
-                        }
-                    }
-                    Text(pattern.patternString)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Details") {
-                    DatePicker("Date", selection: $date, displayedComponents: [.date])
-                    TextField("Odometer (miles)", text: $odometerText)
-                        .keyboardType(.decimalPad)
-                    TextField("Comments", text: $comments, axis: .vertical)
-                        .lineLimit(3)
-                    Toggle("Also log as a rotation service", isOn: $logInterval)
-                }
-            }
-            .navigationTitle("Log Rotation")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await save() } }
-                        .disabled(isSaving || odometerText.isEmpty)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage { TireToast(message: msg) { errorMessage = nil } }
-            }
-            .task {
-                if odometerText.isEmpty && currentOdometer > 0 {
-                    odometerText = String(Int(currentOdometer))
-                }
-            }
-        }
-    }
-
-    private func save() async {
-        guard let odometer = Double(odometerText) else {
-            errorMessage = "Invalid odometer value"
-            return
-        }
-        isSaving = true
-        do {
-            try await NeonRepository.shared.applyRotation(
-                mapping: pattern.mapping,
-                odometer: odometer,
-                date: date,
-                pattern: pattern.patternString,
-                comments: comments.isEmpty ? nil : comments
-            )
-            if logInterval {
-                let record = ServiceRecord.new(
-                    serviceType: "Tire Rotation",
-                    category: "Tires",
-                    odometer: odometer,
-                    date: date,
-                    comments: comments.isEmpty ? pattern.patternString : comments
-                )
-                do {
-                    try await NeonRepository.shared.saveServiceRecord(record)
-                } catch {
-                    SyncManager.shared.queueServiceRecord(record)
-                }
-            }
-            await onSave()
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isSaving = false
-    }
-}
-
-// MARK: - Edit Tire
+// MARK: - Edit Tire (correction)
 
 struct EditTireView: View {
     let tire: Tire
