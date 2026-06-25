@@ -254,7 +254,7 @@ struct EditTireView: View {
         updated.installDate = date
         updated.notes = notes.isEmpty ? nil : notes
         do {
-            try await NeonRepository.shared.updateTire(updated)
+            try await NeonRepository.shared.updateTireResolvingPosition(updated)
             await onSave()
             dismiss()
         } catch {

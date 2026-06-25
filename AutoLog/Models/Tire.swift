@@ -64,6 +64,27 @@ struct Tire: Codable, Identifiable {
     }
 }
 
+/// Resolves a manual corner change so two active tires never share a corner.
+/// Moving a tire onto an occupied corner swaps the occupant into the spot the
+/// moved tire just vacated.
+enum TireMove {
+    struct Update: Equatable {
+        let id: String
+        let position: TirePosition?
+    }
+
+    static func resolve(activeTires: [Tire], moving tireId: String, to newPosition: TirePosition?) -> [Update] {
+        guard let mover = activeTires.first(where: { $0.id == tireId }) else { return [] }
+        var updates: [Update] = []
+        if let newPos = newPosition,
+           let occupant = activeTires.first(where: { $0.id != tireId && $0.position == newPos }) {
+            updates.append(Update(id: occupant.id, position: mover.position))
+        }
+        updates.append(Update(id: tireId, position: newPosition))
+        return updates
+    }
+}
+
 /// An audit record of a rotation: when, at what odometer, and the corner mapping.
 struct TireRotation: Codable, Identifiable {
     let id: String

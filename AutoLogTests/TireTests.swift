@@ -63,6 +63,47 @@ final class TireTests: XCTestCase {
         }
     }
 
+    // MARK: - Manual corner change (swap)
+
+    private func active() -> [Tire] {
+        [
+            Tire(id: "fl", position: .FL, makeModel: "A", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
+            Tire(id: "fr", position: .FR, makeModel: "B", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
+            Tire(id: "rl", position: .RL, makeModel: "C", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
+            Tire(id: "rr", position: .RR, makeModel: "D", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
+        ]
+    }
+
+    func testMoveToOccupiedCornerSwaps() {
+        // Moving RL onto FL must push the FL tire back to RL — never two at FL.
+        let updates = TireMove.resolve(activeTires: active(), moving: "rl", to: .FL)
+        XCTAssertEqual(updates, [
+            TireMove.Update(id: "fl", position: .RL),
+            TireMove.Update(id: "rl", position: .FL),
+        ])
+    }
+
+    func testMoveToEmptyCornerJustMoves() {
+        // FL empty (only rl active here): moving onto it displaces nobody.
+        let tires = [active()[2]] // just rl @ RL
+        let updates = TireMove.resolve(activeTires: tires, moving: "rl", to: .FL)
+        XCTAssertEqual(updates, [TireMove.Update(id: "rl", position: .FL)])
+    }
+
+    func testMoveToSameCornerIsNoSwap() {
+        let updates = TireMove.resolve(activeTires: active(), moving: "fl", to: .FL)
+        XCTAssertEqual(updates, [TireMove.Update(id: "fl", position: .FL)])
+    }
+
+    func testMoveToNoneUnassignsOnly() {
+        let updates = TireMove.resolve(activeTires: active(), moving: "fl", to: nil)
+        XCTAssertEqual(updates, [TireMove.Update(id: "fl", position: nil)])
+    }
+
+    func testUnknownTireProducesNoUpdates() {
+        XCTAssertTrue(TireMove.resolve(activeTires: active(), moving: "ghost", to: .FL).isEmpty)
+    }
+
     // MARK: - Codable
 
     func testTireCodableRoundTrip() {

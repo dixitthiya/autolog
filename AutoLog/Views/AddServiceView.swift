@@ -53,9 +53,14 @@ struct AddServiceView: View {
                                 Text(p.rawValue).tag(p)
                             }
                         }
+                        RotationDiagram(pattern: rotationPattern)
+                            .frame(height: 150)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
                         Text(rotationPattern.patternString)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
                 }
 
@@ -214,5 +219,81 @@ extension ServiceCategory: Hashable {
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(name)
+    }
+}
+
+/// A small top-down car schematic with arrows showing where each tire moves
+/// for the selected rotation pattern. Helps the user understand the pattern
+/// without knowing the FL/RL shorthand.
+struct RotationDiagram: View {
+    let pattern: RotationPattern
+
+    var body: some View {
+        Canvas { context, size in
+            let inset: CGFloat = 24
+            let topPad: CGFloat = 16
+            let pts: [TirePosition: CGPoint] = [
+                .FL: CGPoint(x: inset, y: topPad + 8),
+                .FR: CGPoint(x: size.width - inset, y: topPad + 8),
+                .RL: CGPoint(x: inset, y: size.height - inset),
+                .RR: CGPoint(x: size.width - inset, y: size.height - inset)
+            ]
+
+            // Car body outline
+            let bodyRect = CGRect(x: inset - 12, y: topPad - 6,
+                                  width: size.width - 2 * (inset - 12),
+                                  height: size.height - (topPad - 6) - (inset - 12))
+            let body = Path(roundedRect: bodyRect, cornerRadius: 18)
+            context.stroke(body, with: .color(.secondary.opacity(0.35)), lineWidth: 1.5)
+            // Windshield line near the front
+            var windshield = Path()
+            windshield.move(to: CGPoint(x: bodyRect.minX + 14, y: bodyRect.minY + 22))
+            windshield.addLine(to: CGPoint(x: bodyRect.maxX - 14, y: bodyRect.minY + 22))
+            context.stroke(windshield, with: .color(.secondary.opacity(0.25)), lineWidth: 1)
+            context.draw(
+                Text("FRONT").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary),
+                at: CGPoint(x: size.width / 2, y: bodyRect.minY + 9)
+            )
+
+            // Movement arrows
+            for src in TirePosition.allCases {
+                let dst = pattern.mapping[src] ?? src
+                guard src != dst, let p1 = pts[src], let p2 = pts[dst] else { continue }
+                drawArrow(context, from: p1, to: p2)
+            }
+
+            // Corner dots + labels
+            for pos in TirePosition.allCases {
+                guard let p = pts[pos] else { continue }
+                let dot = Path(ellipseIn: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10))
+                context.fill(dot, with: .color(.accentColor))
+                let labelY = pos.rawValue.hasPrefix("F") ? p.y - 15 : p.y + 15
+                context.draw(
+                    Text(pos.rawValue).font(.system(size: 10, weight: .bold)).foregroundStyle(.primary),
+                    at: CGPoint(x: p.x, y: labelY)
+                )
+            }
+        }
+        .accessibilityLabel("Rotation pattern \(pattern.rawValue): \(pattern.patternString)")
+    }
+
+    private func drawArrow(_ context: GraphicsContext, from: CGPoint, to: CGPoint) {
+        let angle = atan2(to.y - from.y, to.x - from.x)
+        let gap: CGFloat = 10
+        let start = CGPoint(x: from.x + cos(angle) * gap, y: from.y + sin(angle) * gap)
+        let end = CGPoint(x: to.x - cos(angle) * gap, y: to.y - sin(angle) * gap)
+
+        var shaft = Path()
+        shaft.move(to: start)
+        shaft.addLine(to: end)
+        context.stroke(shaft, with: .color(.cyan), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+
+        let head: CGFloat = 7
+        var arrow = Path()
+        arrow.move(to: end)
+        arrow.addLine(to: CGPoint(x: end.x - cos(angle - .pi / 6) * head, y: end.y - sin(angle - .pi / 6) * head))
+        arrow.move(to: end)
+        arrow.addLine(to: CGPoint(x: end.x - cos(angle + .pi / 6) * head, y: end.y - sin(angle + .pi / 6) * head))
+        context.stroke(arrow, with: .color(.cyan), style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
 }

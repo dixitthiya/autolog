@@ -684,6 +684,20 @@ actor NeonRepository {
         try await executeNoResult("DELETE FROM tires WHERE id = $1", params: [id])
     }
 
+    /// Persist an edited tire, swapping corners with any active tire already in
+    /// the destination so two tires never occupy the same corner.
+    func updateTireResolvingPosition(_ tire: Tire) async throws {
+        let active = try await getActiveTires()
+        let updates = TireMove.resolve(activeTires: active, moving: tire.id, to: tire.position)
+        for u in updates where u.id != tire.id {
+            if var occupant = active.first(where: { $0.id == u.id }) {
+                occupant.position = u.position
+                try await updateTire(occupant)
+            }
+        }
+        try await updateTire(tire)
+    }
+
     /// Retire the active tire at `position` and install a new one in its place,
     /// linking the new tire to the retired one (1:1 lineage).
     @discardableResult
