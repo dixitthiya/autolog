@@ -138,6 +138,23 @@ Audit log of rotations — each records the corner mapping applied to the active
 
 ---
 
+### tire_tread_readings
+
+Tread-depth measurements per physical tire over time. Captured at rotations
+(one per corner), replacements (initial depth), and manual edits. Forms a
+wear curve for projection, analogous to rotor thickness readings.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| id | TEXT | PK | UUID |
+| tire_id | TEXT | NOT NULL | The tire measured (references `tires.id`) |
+| timestamp | TIMESTAMPTZ | NOT NULL | When measured |
+| odometer_miles | DOUBLE PRECISION | NOT NULL | Odometer at measurement |
+| depth_32nds | DOUBLE PRECISION | NOT NULL | Tread depth in 32nds of an inch |
+| created_at | TIMESTAMPTZ | DEFAULT now() | Row creation time |
+
+---
+
 ## Migrations
 
 Schema migrations are handled inline in `NeonRepository.initializeSchema()` using `ADD COLUMN IF NOT EXISTS`. No separate migration files.

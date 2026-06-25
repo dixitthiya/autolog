@@ -106,6 +106,30 @@ final class TireTests: XCTestCase {
 
     // MARK: - Codable
 
+    // MARK: - Tread depth
+
+    func testTreadLabelWhole() {
+        XCTAssertEqual((8.0).treadLabel, "8/32")
+        XCTAssertEqual((11.0).treadLabel, "11/32")
+    }
+
+    func testTreadLabelFractional() {
+        XCTAssertEqual((7.5).treadLabel, "7.5/32")
+    }
+
+    func testTreadReadingCodableRoundTrip() {
+        let r = TireTreadReading.new(tireId: "t1", odometer: 186_894, date: Date(timeIntervalSince1970: 1_700_000_000), depth32nds: 9)
+        guard let data = try? JSONEncoder().encode(r),
+              let decoded = try? JSONDecoder().decode(TireTreadReading.self, from: data) else {
+            return XCTFail("encode/decode failed")
+        }
+        XCTAssertEqual(decoded.tireId, "t1")
+        XCTAssertEqual(decoded.odometer, 186_894)
+        XCTAssertEqual(decoded.depth32nds, 9)
+    }
+
+    // MARK: - Codable
+
     func testTireCodableRoundTrip() {
         let t = makeTire(install: 186_894)
         guard let data = try? JSONEncoder().encode(t),

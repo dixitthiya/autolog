@@ -5,6 +5,8 @@ struct AnalyticsView: View {
     @State private var serviceRecords: [ServiceRecord] = []
     @State private var mileageRecords: [MileageRecord] = []
     @State private var thresholds: [ServiceThreshold] = []
+    @State private var tires: [Tire] = []
+    @State private var treadReadings: [TireTreadReading] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedRotorDate: Date?
@@ -71,6 +73,9 @@ struct AnalyticsView: View {
                     }
                     if !frontRotorData.isEmpty || !rearRotorData.isEmpty {
                         rotorWearChart
+                    }
+                    if !treadSeries.isEmpty {
+                        tireTreadChart
                     }
                 }
                 .padding()
@@ -623,6 +628,102 @@ struct AnalyticsView: View {
         }
     }
 
+    // MARK: - Tire Tread Chart
+
+    private struct TreadSeries: Identifiable {
+        let id: String          // tire id
+        let label: String       // current corner, e.g. "FL"
+        let corner: TirePosition?
+        let points: [(miles: Double, depth: Double)]
+    }
+
+    private var treadSeries: [TreadSeries] {
+        let byTire = Dictionary(grouping: treadReadings, by: { $0.tireId })
+        var result: [TreadSeries] = []
+        for tire in tires where tire.isActive {
+            guard let readings = byTire[tire.id], !readings.isEmpty else { continue }
+            let pts = readings
+                .sorted { $0.odometer < $1.odometer }
+                .map { (miles: $0.odometer, depth: $0.depth32nds) }
+            let label = tire.position?.rawValue ?? (tire.makeModel ?? "Tire")
+            result.append(TreadSeries(id: tire.id, label: label, corner: tire.position, points: pts))
+        }
+        return result.sorted { ($0.corner?.rawValue ?? "z") < ($1.corner?.rawValue ?? "z") }
+    }
+
+    /// Linear projection (first→last) to the 2/32 legal limit, in miles.
+    private func treadReplaceMiles(_ s: TreadSeries) -> Double? {
+        guard let first = s.points.first, let last = s.points.last, s.points.count >= 2 else { return nil }
+        let dMiles = last.miles - first.miles
+        guard dMiles > 0 else { return nil }
+        let wearPerMile = (first.depth - last.depth) / dMiles
+        guard wearPerMile > 0 else { return nil }
+        let milesToLimit = (last.depth - 2) / wearPerMile
+        guard milesToLimit > 0 else { return nil }
+        return last.miles + milesToLimit
+    }
+
+    private var tireTreadChart: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Tire Tread")
+                .font(.headline)
+
+            Chart {
+                ForEach(treadSeries) { s in
+                    ForEach(s.points, id: \.miles) { p in
+                        LineMark(
+                            x: .value("Miles", p.miles),
+                            y: .value("Tread", p.depth)
+                        )
+                        .foregroundStyle(by: .value("Tire", s.label))
+                        .symbol(by: .value("Tire", s.label))
+                    }
+                }
+                RuleMark(y: .value("Replace", 2))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                    .foregroundStyle(.red)
+                    .annotation(position: .trailing, alignment: .leading) {
+                        Text("2/32").font(.caption2).foregroundStyle(.red)
+                    }
+                RuleMark(y: .value("Warning", 4))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                    .foregroundStyle(.orange)
+                    .annotation(position: .trailing, alignment: .leading) {
+                        Text("4/32").font(.caption2).foregroundStyle(.orange)
+                    }
+            }
+            .chartXAxisLabel("miles")
+            .chartYAxisLabel("32nds")
+            .frame(height: 240)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(treadSeries) { s in
+                    HStack {
+                        Text(s.label).font(.caption.bold())
+                        if let cur = s.points.last {
+                            Text(cur.depth.treadLabel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if let replaceMiles = treadReplaceMiles(s) {
+                            Text("~\(Int(replaceMiles.rounded()).formatted()) mi at 2/32")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if let cur = s.points.last, cur.depth <= 2 {
+                            Text("at/below 2/32")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+            }
+        }
+        .padding()
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
     // MARK: - Rotor Wear Chart
 
     private var frontRotorData: [(Date, Double)] {
@@ -1022,9 +1123,13 @@ struct AnalyticsView: View {
             async let sr = NeonRepository.shared.getServiceRecords()
             async let mr = NeonRepository.shared.getMileageRecords()
             async let th = NeonRepository.shared.getThresholds()
+            async let ti = NeonRepository.shared.getActiveTires()
+            async let tr = NeonRepository.shared.getAllTreadReadings()
             serviceRecords = try await sr
             mileageRecords = try await mr
             thresholds = try await th
+            tires = try await ti
+            treadReadings = try await tr
         } catch {
             errorMessage = error.localizedDescription
         }

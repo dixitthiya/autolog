@@ -207,6 +207,17 @@ actor NeonRepository {
             )
         """)
 
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS tire_tread_readings (
+                id TEXT PRIMARY KEY,
+                tire_id TEXT NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
+                odometer_miles DOUBLE PRECISION NOT NULL,
+                depth_32nds DOUBLE PRECISION NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+
         // Rename "Oil & Oil Filter Change" -> "Engine Oil & Filter Change"
         let migratedThresholds = try await execute("""
             UPDATE service_thresholds SET service_type = 'Engine Oil & Filter Change'
@@ -735,6 +746,53 @@ actor NeonRepository {
         """, params: [
             rotation.id, rotation.timestamp, rotation.odometer, rotation.pattern, rotation.comments as Any
         ])
+    }
+
+    func saveTreadReading(_ reading: TireTreadReading) async throws {
+        try await executeNoResult("""
+            INSERT INTO tire_tread_readings (id, tire_id, timestamp, odometer_miles, depth_32nds)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO NOTHING
+        """, params: [
+            reading.id, reading.tireId, reading.timestamp, reading.odometer, reading.depth32nds
+        ])
+    }
+
+    func getAllTreadReadings() async throws -> [TireTreadReading] {
+        let rows = try await execute("""
+            SELECT id, tire_id, timestamp, odometer_miles, depth_32nds FROM tire_tread_readings ORDER BY timestamp ASC
+        """)
+        return rows.compactMap { parseTreadReading($0) }
+    }
+
+    /// Latest reading per tire, keyed by tire id — for showing current tread.
+    func getLatestTreadReadingsByTire() async throws -> [String: TireTreadReading] {
+        let rows = try await execute("""
+            SELECT DISTINCT ON (tire_id) id, tire_id, timestamp, odometer_miles, depth_32nds
+            FROM tire_tread_readings ORDER BY tire_id, timestamp DESC
+        """)
+        var map: [String: TireTreadReading] = [:]
+        for row in rows {
+            if let r = parseTreadReading(row) { map[r.tireId] = r }
+        }
+        return map
+    }
+
+    private func parseTreadReading(_ row: [String: Any]) -> TireTreadReading? {
+        guard let id = parseString(row["id"]),
+              let tireId = parseString(row["tire_id"]),
+              let odometer = parseDouble(row["odometer_miles"]),
+              let depth = parseDouble(row["depth_32nds"]) else {
+            Log.db("failed to parse tread reading: \(row)")
+            return nil
+        }
+        return TireTreadReading(
+            id: id,
+            tireId: tireId,
+            timestamp: parseDate(row["timestamp"]) ?? Date(),
+            odometer: odometer,
+            depth32nds: depth
+        )
     }
 
     func getTireRotations() async throws -> [TireRotation] {

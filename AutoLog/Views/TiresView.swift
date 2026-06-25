@@ -6,6 +6,7 @@ import SwiftUI
 struct TiresView: View {
     @State private var tires: [Tire] = []
     @State private var currentOdometer: Double = 0
+    @State private var latestTread: [String: TireTreadReading] = [:]
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedTire: Tire?
@@ -30,7 +31,7 @@ struct TiresView: View {
             }
             .navigationTitle("Tires")
             .sheet(item: $selectedTire) { tire in
-                EditTireView(tire: tire) { await load() }
+                EditTireView(tire: tire, currentOdometer: currentOdometer, latestTread: latestTread[tire.id]) { await load() }
             }
             .overlay(alignment: .bottom) {
                 if let msg = errorMessage { TireToast(message: msg) { errorMessage = nil } }
@@ -71,7 +72,7 @@ struct TiresView: View {
 
     private func cornerCell(_ pos: TirePosition) -> some View {
         let t = tire(at: pos)
-        return TireCornerCard(position: pos, tire: t, currentOdometer: currentOdometer)
+        return TireCornerCard(position: pos, tire: t, currentOdometer: currentOdometer, tread: t.flatMap { latestTread[$0.id] })
             .contentShape(Rectangle())
             .onTapGesture { if let t = t { selectedTire = t } }
     }
@@ -97,8 +98,10 @@ struct TiresView: View {
         do {
             async let tiresTask = NeonRepository.shared.getActiveTires()
             async let mileageTask = NeonRepository.shared.getLatestMileageRecord()
+            async let treadTask = NeonRepository.shared.getLatestTreadReadingsByTire()
             let loadedTires = try await tiresTask
             let latest = try await mileageTask
+            latestTread = try await treadTask
             tires = loadedTires
             currentOdometer = latest?.odometerMiles ?? MileageService.shared.currentMileage
         } catch is CancellationError {
@@ -119,6 +122,7 @@ struct TireCornerCard: View {
     let position: TirePosition
     let tire: Tire?
     let currentOdometer: Double
+    var tread: TireTreadReading? = nil
 
     private let tireYellow = Color(red: 1.0, green: 0.8, blue: 0.0)
 
@@ -145,6 +149,11 @@ struct TireCornerCard: View {
                 Label(ageLabel(tire.ageDays()), systemImage: "calendar")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let tread = tread {
+                    Label("\(tread.depth32nds.treadLabel) tread", systemImage: "ruler")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 Text("No tire")
                     .font(.subheadline)
@@ -174,6 +183,8 @@ struct TireCornerCard: View {
 
 struct EditTireView: View {
     let tire: Tire
+    let currentOdometer: Double
+    let latestTread: TireTreadReading?
     let onSave: () async -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -183,12 +194,15 @@ struct EditTireView: View {
     @State private var odometerText: String
     @State private var date: Date
     @State private var notes: String
+    @State private var newTreadText = ""
     @State private var showDeleteConfirm = false
     @State private var isSaving = false
     @State private var errorMessage: String?
 
-    init(tire: Tire, onSave: @escaping () async -> Void) {
+    init(tire: Tire, currentOdometer: Double, latestTread: TireTreadReading?, onSave: @escaping () async -> Void) {
         self.tire = tire
+        self.currentOdometer = currentOdometer
+        self.latestTread = latestTread
         self.onSave = onSave
         _position = State(initialValue: tire.position ?? .FL)
         _makeModel = State(initialValue: tire.makeModel ?? "")
@@ -215,6 +229,23 @@ struct EditTireView: View {
                         .keyboardType(.decimalPad)
                     TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3)
+                }
+
+                Section {
+                    if let latestTread = latestTread {
+                        HStack {
+                            Text("Latest")
+                            Spacer()
+                            Text("\(latestTread.depth32nds.treadLabel) @ \(Int(latestTread.odometer).formatted()) mi")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    TextField("Add reading (32nds) — measured now", text: $newTreadText)
+                        .keyboardType(.decimalPad)
+                } header: {
+                    Text("Tread depth")
+                } footer: {
+                    Text("Recorded at the current odometer (\(Int(currentOdometer).formatted()) mi).")
                 }
 
                 Section {
@@ -258,6 +289,11 @@ struct EditTireView: View {
         updated.notes = notes.isEmpty ? nil : notes
         do {
             try await NeonRepository.shared.updateTireResolvingPosition(updated)
+            if let depth = Double(newTreadText), depth > 0 {
+                try await NeonRepository.shared.saveTreadReading(
+                    TireTreadReading.new(tireId: tire.id, odometer: currentOdometer, depth32nds: depth)
+                )
+            }
             await onSave()
             dismiss()
         } catch {

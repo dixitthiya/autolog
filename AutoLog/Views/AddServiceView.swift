@@ -17,6 +17,9 @@ struct AddServiceView: View {
     @State private var rotationPattern: RotationPattern = .rearwardCross
     @State private var replacementCorners: Set<TirePosition> = []
     @State private var tireMakeModel = ""
+    @State private var replacementTreadText = ""
+    @State private var activeTiresByCorner: [TirePosition: Tire] = [:]
+    @State private var rotationTreadText: [TirePosition: String] = [:]
 
     private var isRotorType: Bool {
         selectedType.contains("Rotor Thickness")
@@ -62,6 +65,31 @@ struct AddServiceView: View {
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
+
+                    if !activeTiresByCorner.isEmpty {
+                        Section {
+                            ForEach(TirePosition.allCases) { pos in
+                                if let tire = activeTiresByCorner[pos] {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(pos.displayName).font(.subheadline)
+                                            Text(tire.makeModel ?? "Tire")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        TextField("/32", text: treadBinding(for: pos))
+                                            .keyboardType(.decimalPad)
+                                            .multilineTextAlignment(.trailing)
+                                            .frame(width: 56)
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("Tread depth (optional)")
+                        } footer: {
+                            Text("Measured at each corner before the rotation. Recorded against the tire there now.")
+                        }
+                    }
                 }
 
                 if isTireReplacement {
@@ -84,6 +112,8 @@ struct AddServiceView: View {
                             }
                         }
                         TextField("Make / model", text: $tireMakeModel)
+                        TextField("Tread (32nds) — optional", text: $replacementTreadText)
+                            .keyboardType(.decimalPad)
                     }
                 }
 
@@ -137,6 +167,20 @@ struct AddServiceView: View {
         if let latest = try? await NeonRepository.shared.getLatestMileageRecord() {
             odometerText = String(Int(latest.odometerMiles))
         }
+        if let active = try? await NeonRepository.shared.getActiveTires() {
+            var byCorner: [TirePosition: Tire] = [:]
+            for tire in active {
+                if let pos = tire.position { byCorner[pos] = tire }
+            }
+            activeTiresByCorner = byCorner
+        }
+    }
+
+    private func treadBinding(for pos: TirePosition) -> Binding<String> {
+        Binding(
+            get: { rotationTreadText[pos] ?? "" },
+            set: { rotationTreadText[pos] = $0 }
+        )
     }
 
     private func save() async {
@@ -190,6 +234,14 @@ struct AddServiceView: View {
     /// physical tire layout so the Tires view reflects it.
     private func applyTireSideEffects(odometer: Double) async throws {
         if isTireRotation {
+            // Record tread per corner against the tire currently there, before moving.
+            for (pos, tire) in activeTiresByCorner {
+                if let depth = Double(rotationTreadText[pos] ?? ""), depth > 0 {
+                    try await NeonRepository.shared.saveTreadReading(
+                        TireTreadReading.new(tireId: tire.id, odometer: odometer, date: date, depth32nds: depth)
+                    )
+                }
+            }
             try await NeonRepository.shared.applyRotation(
                 mapping: rotationPattern.mapping,
                 odometer: odometer,
@@ -199,14 +251,20 @@ struct AddServiceView: View {
             )
         } else if isTireReplacement {
             let make = tireMakeModel.trimmingCharacters(in: .whitespaces)
+            let tread = Double(replacementTreadText)
             for corner in TirePosition.allCases where replacementCorners.contains(corner) {
-                try await NeonRepository.shared.replaceTire(
+                let newTire = try await NeonRepository.shared.replaceTire(
                     at: corner,
                     makeModel: make.isEmpty ? nil : make,
                     odometer: odometer,
                     date: date,
                     notes: comments.isEmpty ? nil : comments
                 )
+                if let tread = tread, tread > 0 {
+                    try await NeonRepository.shared.saveTreadReading(
+                        TireTreadReading.new(tireId: newTire.id, odometer: odometer, date: date, depth32nds: tread)
+                    )
+                }
             }
         }
     }

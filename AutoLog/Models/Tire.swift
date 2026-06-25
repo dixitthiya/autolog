@@ -64,6 +64,28 @@ struct Tire: Codable, Identifiable {
     }
 }
 
+/// A tread-depth measurement of one physical tire at a point in time.
+/// Depth is in 32nds of an inch (new ~10-11/32, legal limit 2/32). Bound to
+/// the tire, so readings form a wear curve across rotations and corners.
+struct TireTreadReading: Codable, Identifiable {
+    let id: String
+    let tireId: String
+    let timestamp: Date
+    let odometer: Double
+    let depth32nds: Double
+
+    static func new(tireId: String, odometer: Double, date: Date = Date(), depth32nds: Double) -> TireTreadReading {
+        TireTreadReading(id: UUID().uuidString, tireId: tireId, timestamp: date, odometer: odometer, depth32nds: depth32nds)
+    }
+}
+
+extension Double {
+    /// "8/32" — whole when possible, one decimal otherwise.
+    var treadLabel: String {
+        self == rounded() ? "\(Int(self))/32" : String(format: "%.1f/32", self)
+    }
+}
+
 /// Resolves a manual corner change so two active tires never share a corner.
 /// Moving a tire onto an occupied corner swaps the occupant into the spot the
 /// moved tire just vacated.
