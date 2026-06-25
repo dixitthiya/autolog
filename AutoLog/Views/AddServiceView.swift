@@ -250,10 +250,8 @@ struct RotationDiagram: View {
             windshield.move(to: CGPoint(x: bodyRect.minX + 14, y: bodyRect.minY + 22))
             windshield.addLine(to: CGPoint(x: bodyRect.maxX - 14, y: bodyRect.minY + 22))
             context.stroke(windshield, with: .color(.secondary.opacity(0.25)), lineWidth: 1)
-            context.draw(
-                Text("FRONT").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary),
-                at: CGPoint(x: size.width / 2, y: bodyRect.minY + 9)
-            )
+            drawLabel(context, Text("FRONT").font(.system(size: 8, weight: .semibold)),
+                      color: .secondary, at: CGPoint(x: size.width / 2, y: bodyRect.minY + 9))
 
             // Movement arrows
             for src in TirePosition.allCases {
@@ -268,13 +266,20 @@ struct RotationDiagram: View {
                 let dot = Path(ellipseIn: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10))
                 context.fill(dot, with: .color(.accentColor))
                 let labelY = pos.rawValue.hasPrefix("F") ? p.y - 15 : p.y + 15
-                context.draw(
-                    Text(pos.rawValue).font(.system(size: 10, weight: .bold)).foregroundStyle(.primary),
-                    at: CGPoint(x: p.x, y: labelY)
-                )
+                drawLabel(context, Text(pos.rawValue).font(.system(size: 10, weight: .bold)),
+                          color: .primary, at: CGPoint(x: p.x, y: labelY))
             }
         }
         .accessibilityLabel("Rotation pattern \(pattern.rawValue): \(pattern.patternString)")
+    }
+
+    /// Draw a Text label with an explicit color. Uses resolve+shading because
+    /// GraphicsContext.draw requires a `Text`, and `.foregroundStyle` on Text
+    /// returns a View, not Text.
+    private func drawLabel(_ context: GraphicsContext, _ text: Text, color: Color, at point: CGPoint) {
+        var resolved = context.resolve(text)
+        resolved.shading = .color(color)
+        context.draw(resolved, at: point)
     }
 
     private func drawArrow(_ context: GraphicsContext, from: CGPoint, to: CGPoint) {
