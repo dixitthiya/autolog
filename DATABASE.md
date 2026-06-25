@@ -100,6 +100,44 @@ Raw OBD event log — every PID read, init, failure, and skip is recorded here f
 
 ---
 
+### tires
+
+Physical tires, tracked per corner. Mileage is bound to the tire (install odometer),
+so it survives rotation. One row per physical tire; retired tires are kept for history
+(`removed_odometer` set) and linked from the tire that replaced them.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| id | TEXT | PK | UUID |
+| position | TEXT | YES | Current corner: `FL`, `FR`, `RL`, `RR` (NULL once retired) |
+| make_model | TEXT | YES | e.g. "Yokohama Avid Ascend" |
+| install_odometer | DOUBLE PRECISION | NOT NULL | Odometer when installed |
+| install_date | TIMESTAMPTZ | NOT NULL | When installed |
+| removed_odometer | DOUBLE PRECISION | YES | Odometer when replaced (NULL = active) |
+| removed_date | TIMESTAMPTZ | YES | When replaced |
+| replaces_tire_id | TEXT | YES | The tire this one replaced (1:1 lineage) |
+| notes | TEXT | YES | Free-text notes |
+| created_at | TIMESTAMPTZ | DEFAULT now() | Row creation time |
+
+Mileage on a tire = `currentOdometer − install_odometer` (or `removed_odometer − install_odometer` once retired). Seeded once with the current 4-corner layout.
+
+---
+
+### tire_rotations
+
+Audit log of rotations — each records the corner mapping applied to the active tires.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| id | TEXT | PK | UUID |
+| timestamp | TIMESTAMPTZ | NOT NULL | When the rotation was performed |
+| odometer_miles | DOUBLE PRECISION | NOT NULL | Odometer at rotation |
+| pattern | TEXT | YES | Mapping applied, e.g. `FL>RL, FR>RR, RL>FR, RR>FL` |
+| comments | TEXT | YES | Free-text notes |
+| created_at | TIMESTAMPTZ | DEFAULT now() | Row creation time |
+
+---
+
 ## Migrations
 
 Schema migrations are handled inline in `NeonRepository.initializeSchema()` using `ADD COLUMN IF NOT EXISTS`. No separate migration files.

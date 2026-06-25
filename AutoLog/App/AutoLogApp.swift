@@ -96,6 +96,11 @@ struct ContentView: View {
                 }
                 .badge(syncManager.failedCount > 0 ? syncManager.failedCount : 0)
 
+            TiresView()
+                .tabItem {
+                    Label("Tires", systemImage: "circle.grid.2x2")
+                }
+
             AnalyticsView()
                 .tabItem {
                     Label("Analytics", systemImage: "chart.xyaxis.line")

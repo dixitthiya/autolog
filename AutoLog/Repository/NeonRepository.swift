@@ -181,6 +181,32 @@ actor NeonRepository {
             )
         """)
 
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS tires (
+                id TEXT PRIMARY KEY,
+                position TEXT,
+                make_model TEXT,
+                install_odometer DOUBLE PRECISION NOT NULL,
+                install_date TIMESTAMPTZ NOT NULL,
+                removed_odometer DOUBLE PRECISION,
+                removed_date TIMESTAMPTZ,
+                replaces_tire_id TEXT,
+                notes TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS tire_rotations (
+                id TEXT PRIMARY KEY,
+                timestamp TIMESTAMPTZ NOT NULL,
+                odometer_miles DOUBLE PRECISION NOT NULL,
+                pattern TEXT,
+                comments TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+
         // Rename "Oil & Oil Filter Change" -> "Engine Oil & Filter Change"
         let migratedThresholds = try await execute("""
             UPDATE service_thresholds SET service_type = 'Engine Oil & Filter Change'
@@ -205,6 +231,37 @@ actor NeonRepository {
         Log.db("schema initialized")
         try await seedThresholds()
         try await seedServiceCategories()
+        try await seedTires()
+    }
+
+    private func seedTires() async throws {
+        let rows = try await execute("SELECT COUNT(*) as cnt FROM tires")
+        let count = parseInt(rows.first?["cnt"]) ?? 0
+        guard count == 0 else {
+            Log.db("tires already seeded (\(count) rows)")
+            return
+        }
+
+        Log.db("seeding tires")
+        let dateFrom: (String) -> Date = { str in
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd"
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(identifier: "UTC")
+            return f.date(from: str) ?? Date()
+        }
+        // Reconstructed + user-confirmed current layout.
+        let seed: [(TirePosition, String, Double, String)] = [
+            (.FL, "Yokohama Avid Ascend", 186894, "2026-06-25"),
+            (.FR, "Yokohama Avid Ascend", 164796, "2025-08-09"),
+            (.RL, "Yokohama GTX 91V", 178400, "2026-02-20"),
+            (.RR, "Yokohama GTX 91V", 176125, "2026-01-22"),
+        ]
+        for t in seed {
+            let tire = Tire.new(position: t.0, makeModel: t.1, installOdometer: t.2, installDate: dateFrom(t.3))
+            try await saveTire(tire)
+        }
+        Log.db("tires seeded (\(seed.count) rows)")
     }
 
     private func seedThresholds() async throws {
@@ -564,6 +621,131 @@ actor NeonRepository {
         return catOrder.map { cat in
             ServiceCategory(name: cat, icon: ServiceCategory.iconFor(cat), types: catMap[cat] ?? [])
         }
+    }
+
+    // MARK: - Tires
+
+    func getActiveTires() async throws -> [Tire] {
+        let rows = try await execute("""
+            SELECT id, position, make_model, install_odometer, install_date, removed_odometer, removed_date, replaces_tire_id, notes
+            FROM tires WHERE removed_odometer IS NULL
+        """)
+        return rows.compactMap { parseTire($0) }
+    }
+
+    func getAllTires() async throws -> [Tire] {
+        let rows = try await execute("""
+            SELECT id, position, make_model, install_odometer, install_date, removed_odometer, removed_date, replaces_tire_id, notes
+            FROM tires ORDER BY install_date DESC
+        """)
+        return rows.compactMap { parseTire($0) }
+    }
+
+    func saveTire(_ tire: Tire) async throws {
+        try await executeNoResult("""
+            INSERT INTO tires (id, position, make_model, install_odometer, install_date, removed_odometer, removed_date, replaces_tire_id, notes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (id) DO NOTHING
+        """, params: [
+            tire.id, tire.position?.rawValue as Any, tire.makeModel as Any,
+            tire.installOdometer, tire.installDate,
+            tire.removedOdometer as Any, tire.removedDate as Any,
+            tire.replacesTireId as Any, tire.notes as Any
+        ])
+    }
+
+    func updateTire(_ tire: Tire) async throws {
+        try await executeNoResult("""
+            UPDATE tires SET position = $2, make_model = $3, install_odometer = $4, install_date = $5,
+            removed_odometer = $6, removed_date = $7, replaces_tire_id = $8, notes = $9
+            WHERE id = $1
+        """, params: [
+            tire.id, tire.position?.rawValue as Any, tire.makeModel as Any,
+            tire.installOdometer, tire.installDate,
+            tire.removedOdometer as Any, tire.removedDate as Any,
+            tire.replacesTireId as Any, tire.notes as Any
+        ])
+    }
+
+    func deleteTire(id: String) async throws {
+        try await executeNoResult("DELETE FROM tires WHERE id = $1", params: [id])
+    }
+
+    /// Retire the active tire at `position` and install a new one in its place,
+    /// linking the new tire to the retired one (1:1 lineage).
+    @discardableResult
+    func replaceTire(at position: TirePosition, makeModel: String?, odometer: Double, date: Date, notes: String?) async throws -> Tire {
+        let active = try await getActiveTires()
+        var replacesId: String? = nil
+        if var old = active.first(where: { $0.position == position }) {
+            old.removedOdometer = odometer
+            old.removedDate = date
+            old.position = nil
+            try await updateTire(old)
+            replacesId = old.id
+        }
+        let new = Tire.new(position: position, makeModel: makeModel, installOdometer: odometer, installDate: date, notes: notes, replacesTireId: replacesId)
+        try await saveTire(new)
+        return new
+    }
+
+    /// Apply a rotation mapping (old corner → new corner) to the active tires and log it.
+    func applyRotation(mapping: [TirePosition: TirePosition], odometer: Double, date: Date, pattern: String, comments: String?) async throws {
+        let active = try await getActiveTires()
+        for var tire in active {
+            guard let pos = tire.position, let newPos = mapping[pos] else { continue }
+            tire.position = newPos
+            try await updateTire(tire)
+        }
+        try await saveTireRotation(TireRotation.new(odometer: odometer, date: date, pattern: pattern, comments: comments))
+    }
+
+    func saveTireRotation(_ rotation: TireRotation) async throws {
+        try await executeNoResult("""
+            INSERT INTO tire_rotations (id, timestamp, odometer_miles, pattern, comments)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO NOTHING
+        """, params: [
+            rotation.id, rotation.timestamp, rotation.odometer, rotation.pattern, rotation.comments as Any
+        ])
+    }
+
+    func getTireRotations() async throws -> [TireRotation] {
+        let rows = try await execute("""
+            SELECT id, timestamp, odometer_miles, pattern, comments FROM tire_rotations ORDER BY timestamp DESC
+        """)
+        return rows.compactMap { row in
+            guard let id = parseString(row["id"]),
+                  let odometer = parseDouble(row["odometer_miles"]) else { return nil }
+            let timestamp = parseDate(row["timestamp"]) ?? Date()
+            return TireRotation(
+                id: id,
+                timestamp: timestamp,
+                odometer: odometer,
+                pattern: parseString(row["pattern"]) ?? "",
+                comments: parseString(row["comments"])
+            )
+        }
+    }
+
+    private func parseTire(_ row: [String: Any]) -> Tire? {
+        guard let id = parseString(row["id"]),
+              let installOdometer = parseDouble(row["install_odometer"]) else {
+            Log.db("failed to parse tire: \(row)")
+            return nil
+        }
+        let installDate = parseDate(row["install_date"]) ?? Date()
+        return Tire(
+            id: id,
+            position: parseString(row["position"]).flatMap { TirePosition(rawValue: $0) },
+            makeModel: parseString(row["make_model"]),
+            installOdometer: installOdometer,
+            installDate: installDate,
+            removedOdometer: parseDouble(row["removed_odometer"]),
+            removedDate: parseDate(row["removed_date"]),
+            replacesTireId: parseString(row["replaces_tire_id"]),
+            notes: parseString(row["notes"])
+        )
     }
 
     func getThresholds() async throws -> [ServiceThreshold] {
