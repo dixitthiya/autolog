@@ -101,6 +101,10 @@ struct TiresView: View {
             let latest = try await mileageTask
             tires = loadedTires
             currentOdometer = latest?.odometerMiles ?? MileageService.shared.currentMileage
+        } catch is CancellationError {
+            // Pull-to-refresh retracting cancels the in-flight request — not a real error.
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Same: a cancelled URL request, don't surface it.
         } catch {
             errorMessage = error.localizedDescription
             if currentOdometer == 0 { currentOdometer = MileageService.shared.currentMileage }

@@ -311,6 +311,10 @@ struct DashboardView: View {
                 mileageService.currentMileage = latest.odometerMiles
             }
             isOffline = false
+        } catch is CancellationError {
+            // Pull-to-refresh retracting cancels the in-flight request — not a real error.
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Same: a cancelled URL request, don't flip offline or toast.
         } catch {
             isOffline = true
             errorMessage = error.localizedDescription

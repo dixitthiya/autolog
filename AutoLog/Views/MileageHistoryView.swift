@@ -58,6 +58,10 @@ struct MileageHistoryView: View {
         isLoading = true
         do {
             records = try await NeonRepository.shared.getMileageRecords()
+        } catch is CancellationError {
+            // Pull-to-refresh retracting cancels the in-flight request — not a real error.
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Same: a cancelled URL request, don't surface it.
         } catch {
             errorMessage = error.localizedDescription
         }
