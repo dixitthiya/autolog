@@ -18,6 +18,7 @@ struct TiresView: View {
                     VStack(spacing: 16) {
                         odometerHeader
                         cornerGrid
+                        pastTiresSection
                         maintenanceHint
                         emptyHint
                     }
@@ -41,6 +42,11 @@ struct TiresView: View {
     }
 
     private var activeTires: [Tire] { tires.filter { $0.isActive } }
+
+    private var retiredTires: [Tire] {
+        tires.filter { !$0.isActive }
+            .sorted { ($0.removedDate ?? .distantPast) > ($1.removedDate ?? .distantPast) }
+    }
 
     private func tire(at pos: TirePosition) -> Tire? {
         activeTires.first { $0.position == pos }
@@ -77,6 +83,24 @@ struct TiresView: View {
             .onTapGesture { if let t = t { selectedTire = t } }
     }
 
+    @ViewBuilder
+    private var pastTiresSection: some View {
+        if !retiredTires.isEmpty {
+            DisclosureGroup("Past Tires (\(retiredTires.count))") {
+                VStack(spacing: 10) {
+                    ForEach(retiredTires) { tire in
+                        PastTireRow(tire: tire, currentOdometer: currentOdometer, tread: latestTread[tire.id])
+                    }
+                }
+                .padding(.top, 8)
+            }
+            .font(.subheadline.bold())
+            .padding()
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
     private var maintenanceHint: some View {
         Label("Log rotations and replacements in Maintenance — this view reflects them. Tap a tire to correct its details.", systemImage: "info.circle")
             .font(.caption)
@@ -96,7 +120,7 @@ struct TiresView: View {
     private func load() async {
         isLoading = true
         do {
-            async let tiresTask = NeonRepository.shared.getActiveTires()
+            async let tiresTask = NeonRepository.shared.getAllTires()
             async let mileageTask = NeonRepository.shared.getLatestMileageRecord()
             async let treadTask = NeonRepository.shared.getLatestTreadReadingsByTire()
             let loadedTires = try await tiresTask
@@ -127,7 +151,7 @@ struct TireCornerCard: View {
     private let tireYellow = Color(red: 1.0, green: 0.8, blue: 0.0)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(position.displayName)
                     .font(.caption.bold())
@@ -143,30 +167,112 @@ struct TireCornerCard: View {
                     .font(.subheadline.bold())
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                Label("\(Int(tire.miles(currentOdometer: currentOdometer)).formatted()) mi", systemImage: "speedometer")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Label(ageLabel(tire.ageDays()), systemImage: "calendar")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let tread = tread {
-                    Label("\(tread.depth32nds.treadLabel) tread", systemImage: "ruler")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+                Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 3) {
+                    GridRow {
+                        TireRowIcon("road.lanes")
+                        Text(lifeText(tire))
+                    }
+                    GridRow {
+                        TireRowIcon("calendar")
+                        Text(tire.installDate.formatted(date: .abbreviated, time: .omitted))
+                    }
+                    GridRow {
+                        TireRowIcon("gauge.with.dots.needle.bottom.50percent")
+                        Text("\(Int(tire.installOdometer).formatted()) mi")
+                    }
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             } else {
                 Text("No tire")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 116, alignment: .topLeading)
         .padding(12)
         .background(Color(.secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func ageLabel(_ days: Int) -> String {
+    private func lifeText(_ tire: Tire) -> String {
+        let miles = Int(tire.miles(currentOdometer: currentOdometer)).formatted()
+        if let tread = tread {
+            return "\(miles) mi · \(tread.depth32nds.treadLabel)"
+        }
+        return "\(miles) mi"
+    }
+}
+
+/// Fixed-width row icon so values stay aligned across grid rows.
+private struct TireRowIcon: View {
+    let name: String
+    init(_ name: String) { self.name = name }
+    var body: some View {
+        Image(systemName: name)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .frame(width: 16, alignment: .center)
+    }
+}
+
+// MARK: - Past Tire Row
+
+struct PastTireRow: View {
+    let tire: Tire
+    let currentOdometer: Double
+    var tread: TireTreadReading? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(tire.makeModel ?? "Tire")
+                .font(.subheadline.bold())
+
+            Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 3) {
+                GridRow {
+                    TireRowIcon("road.lanes")
+                    Text("\(Int(tire.miles(currentOdometer: currentOdometer)).formatted()) mi · \(durationLabel(tire.ageDays()))")
+                }
+                GridRow {
+                    TireRowIcon("calendar")
+                    Text("Installed \(fmt(tire.installDate)) @ \(odo(tire.installOdometer))")
+                }
+                GridRow {
+                    TireRowIcon("xmark.circle")
+                    Text(removedText)
+                }
+                if let tread = tread {
+                    GridRow {
+                        TireRowIcon("ruler")
+                        Text("Last tread \(tread.depth32nds.treadLabel)")
+                    }
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var removedText: String {
+        guard let odo = tire.removedOdometer else { return "In service" }
+        let date = tire.removedDate.map { fmt($0) } ?? "—"
+        return "Removed \(date) @ \(self.odo(odo))"
+    }
+
+    private func fmt(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    private func odo(_ miles: Double) -> String {
+        "\(Int(miles).formatted()) mi"
+    }
+
+    private func durationLabel(_ days: Int) -> String {
         let months = days / 30
         if months >= 12 {
             let years = months / 12
