@@ -258,6 +258,44 @@ actor NeonRepository {
         """)
 
         try await seedTires()
+        try await seedRetiredTires()
+    }
+
+    /// Backfill historical retired tires from reconstructed + user-confirmed
+    /// history. Deterministic ids + ON CONFLICT DO NOTHING make this idempotent,
+    /// so it runs every launch but only inserts rows that are missing. Old
+    /// service_records are left untouched (spend chart unaffected).
+    private func seedRetiredTires() async throws {
+        let dateFrom: (String) -> Date = { str in
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd"
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(identifier: "UTC")
+            return f.date(from: str) ?? Date()
+        }
+        // (id, make/model, installOdo, installDate, removedOdo, removedDate)
+        let retired: [(String, String, Double, String, Double, String)] = [
+            ("retired-mavis",      "Mavis ×4",             129024, "2022-02-16", 156700, "2024-08-12"),
+            ("retired-michelin",   "Michelin ×2",          156700, "2024-08-12", 176125, "2026-01-22"),
+            ("retired-falken",     "Falken ×2",            156700, "2024-08-12", 164796, "2025-08-09"),
+            ("retired-avid-older", "Yokohama Avid Ascend", 164796, "2025-08-09", 186894, "2026-06-25"),
+            ("retired-temp",       "Temporary tire",       176125, "2026-01-22", 178400, "2026-02-20"),
+        ]
+        for r in retired {
+            let tire = Tire(
+                id: r.0,
+                position: nil,
+                makeModel: r.1,
+                installOdometer: r.2,
+                installDate: dateFrom(r.3),
+                removedOdometer: r.4,
+                removedDate: dateFrom(r.5),
+                replacesTireId: nil,
+                notes: nil
+            )
+            try await saveTire(tire)
+        }
+        Log.db("retired tires backfilled (\(retired.count) rows)")
     }
 
     private func seedTires() async throws {
