@@ -6,6 +6,7 @@ final class TireTests: XCTestCase {
     private func makeTire(install: Double, removed: Double? = nil, pos: TirePosition? = .FL) -> Tire {
         Tire(
             id: "t1",
+            vehicleId: "v1",
             position: pos,
             makeModel: "Yokohama",
             installOdometer: install,
@@ -67,10 +68,10 @@ final class TireTests: XCTestCase {
 
     private func active() -> [Tire] {
         [
-            Tire(id: "fl", position: .FL, makeModel: "A", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
-            Tire(id: "fr", position: .FR, makeModel: "B", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
-            Tire(id: "rl", position: .RL, makeModel: "C", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
-            Tire(id: "rr", position: .RR, makeModel: "D", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
+            Tire(id: "fl", vehicleId: "v1", position: .FL, makeModel: "A", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
+            Tire(id: "fr", vehicleId: "v1", position: .FR, makeModel: "B", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
+            Tire(id: "rl", vehicleId: "v1", position: .RL, makeModel: "C", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
+            Tire(id: "rr", vehicleId: "v1", position: .RR, makeModel: "D", installOdometer: 100, installDate: Date(), removedOdometer: nil, removedDate: nil, replacesTireId: nil, notes: nil),
         ]
     }
 
@@ -118,7 +119,7 @@ final class TireTests: XCTestCase {
     }
 
     func testTreadReadingCodableRoundTrip() {
-        let r = TireTreadReading.new(tireId: "t1", odometer: 186_894, date: Date(timeIntervalSince1970: 1_700_000_000), depth32nds: 9)
+        let r = TireTreadReading.new(tire: makeTire(install: 178_400), odometer: 186_894, date: Date(timeIntervalSince1970: 1_700_000_000), depth32nds: 9)
         guard let data = try? JSONEncoder().encode(r),
               let decoded = try? JSONDecoder().decode(TireTreadReading.self, from: data) else {
             return XCTFail("encode/decode failed")

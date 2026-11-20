@@ -28,7 +28,7 @@ actor OBDCommandService {
         Log.obd("ELM327 initialized with CAN protocol")
     }
 
-    func sendCommand(_ command: String) async throws -> String {
+    func sendCommand(_ command: String, timeout: TimeInterval = Config.obdCommandTimeout) async throws -> String {
         await MainActor.run {
             bleManager.send(command)
         }
@@ -52,7 +52,7 @@ actor OBDCommandService {
             }
 
             group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(Config.obdCommandTimeout * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 throw OBDError.timeout
             }
 
@@ -83,6 +83,36 @@ actor OBDCommandService {
         let response = try await sendCommand("0131")
         return PIDParser.parseDistanceSinceCodesCleared(response)
     }
+
+    /// Read the VIN (mode 09 PID 02) to identify which car the adapter is in.
+    func readVIN(timeout: TimeInterval = 2) async -> VINReadResult {
+        let raw: String
+        do {
+            raw = try await sendCommand("0902", timeout: timeout)
+        } catch OBDError.timeout {
+            // A timed-out read cancels the listener, which ends the shared
+            // response stream, and a VIN reply arriving late would otherwise be
+            // taken as the next command's answer. Let it land, then start a
+            // fresh stream so the RPM / 0131 reads still work.
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            await MainActor.run { bleManager.resetResponseStream() }
+            return .failed(reason: "vin_timeout", raw: nil)
+        } catch {
+            Log.obd("VIN read error: \(error.localizedDescription)")
+            return .failed(reason: "vin_error", raw: nil)
+        }
+
+        switch PIDParser.parseVIN(raw) {
+        case .vin(let vin): return .vin(vin, raw: raw)
+        case .noData: return .failed(reason: "vin_no_data", raw: raw)
+        case .invalid: return .failed(reason: "vin_invalid", raw: raw)
+        }
+    }
+}
+
+enum VINReadResult {
+    case vin(String, raw: String)
+    case failed(reason: String, raw: String?)
 }
 
 enum OBDError: LocalizedError {

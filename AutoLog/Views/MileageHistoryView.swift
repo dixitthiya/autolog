@@ -6,6 +6,7 @@ struct MileageHistoryView: View {
     @State private var showAddSheet = false
     @State private var selectedRecord: MileageRecord?
     @State private var errorMessage: String?
+    @ObservedObject private var vehicleStore = VehicleStore.shared
 
     var body: some View {
         NavigationStack {
@@ -40,24 +41,25 @@ struct MileageHistoryView: View {
                 }
             }
             .sheet(isPresented: $showAddSheet) {
-                EditMileageView(record: nil) { await loadRecords() }
+                EditMileageView(record: nil, vehicleId: vehicleStore.viewedVehicleId) { await loadRecords() }
             }
             .sheet(item: $selectedRecord) { record in
-                EditMileageView(record: record) { await loadRecords() }
+                EditMileageView(record: record, vehicleId: record.vehicleId) { await loadRecords() }
             }
             .overlay(alignment: .bottom) {
                 if let msg = errorMessage {
                     toastMessage(msg)
                 }
             }
-            .task { await loadRecords() }
+            .task(id: vehicleStore.viewedVehicleId) { await loadRecords() }
         }
     }
 
     private func loadRecords() async {
+        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
         isLoading = true
         do {
-            records = try await NeonRepository.shared.getMileageRecords()
+            records = try await NeonRepository.shared.getMileageRecords(vehicleId: vehicleId)
         } catch is CancellationError {
             // Pull-to-refresh retracting cancels the in-flight request — not a real error.
         } catch let urlError as URLError where urlError.code == .cancelled {

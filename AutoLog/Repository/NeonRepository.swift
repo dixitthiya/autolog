@@ -10,11 +10,28 @@ actor NeonRepository {
         return f
     }()
 
+    /// True once the multi_car_v1 migration is confirmed in this launch. Until
+    /// then captures are blocked and reads treat a NULL vehicle_id as the Elantra.
+    private(set) var isMultiCarReady = false
+
     private init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = Config.urlSessionTimeout
         config.timeoutIntervalForResource = Config.urlSessionTimeout
         self.session = URLSession(configuration: config)
+    }
+
+    /// WHERE fragment matching one vehicle's rows (`$param` = vehicle id).
+    /// Before the backfill is confirmed, rows with no car yet count as the Elantra's.
+    private func vehicleFilter(_ param: Int, column: String = "vehicle_id") -> String {
+        isMultiCarReady
+            ? "\(column) = $\(param)"
+            : "COALESCE(\(column), '\(Vehicle.elantraId)') = $\(param)"
+    }
+
+    private func requireVehicle(_ vehicleId: String?) throws -> String {
+        guard let vehicleId, !vehicleId.isEmpty else { throw NeonError.missingVehicle }
+        return vehicleId
     }
 
     // MARK: - Raw Query
@@ -218,17 +235,20 @@ actor NeonRepository {
             )
         """)
 
-        // Rename "Oil & Oil Filter Change" -> "Engine Oil & Filter Change"
+        try await migrateMultiCar()
+
+        // Rename "Oil & Oil Filter Change" -> "Engine Oil & Filter Change" (Elantra
+        // data only; the shared services catalog is renamed for everyone)
         let migratedThresholds = try await execute("""
             UPDATE service_thresholds SET service_type = 'Engine Oil & Filter Change'
-            WHERE service_type = 'Oil & Oil Filter Change'
+            WHERE service_type = 'Oil & Oil Filter Change' AND vehicle_id = $1
             RETURNING service_type
-        """)
+        """, params: [Vehicle.elantraId])
         let migratedRecords = try await execute("""
             UPDATE service_records SET service_type = 'Engine Oil & Filter Change'
-            WHERE service_type = 'Oil & Oil Filter Change'
+            WHERE service_type = 'Oil & Oil Filter Change' AND vehicle_id = $1
             RETURNING id
-        """)
+        """, params: [Vehicle.elantraId])
         let migratedServices = try await execute("""
             UPDATE services SET service_type = 'Engine Oil & Filter Change'
             WHERE service_type = 'Oil & Oil Filter Change'
@@ -261,6 +281,148 @@ actor NeonRepository {
         try await seedRetiredTires()
     }
 
+    // MARK: - Multi-Car Migration
+
+    /// Phase A: idempotent DDL, safe to run every launch and safe if interrupted
+    /// (each statement either already happened or happens now).
+    /// Phase B: backfill + NOT NULL + thresholds PK change in ONE DO block, so it
+    /// is a single transaction — all or nothing — and a no-op once the
+    /// multi_car_v1 marker exists. Approved SQL; verified on a Neon branch.
+    private func migrateMultiCar() async throws {
+        // A1
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS vehicles (
+                id          TEXT PRIMARY KEY,
+                nickname    TEXT,
+                make        TEXT,
+                model       TEXT,
+                year        INTEGER,
+                vin         TEXT UNIQUE CHECK (vin IS NULL OR vin ~ '^[A-HJ-NPR-Z0-9]{17}$'),
+                status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired')),
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
+        // A2
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                name       TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
+        // A3
+        try await executeNoResult("""
+            INSERT INTO vehicles (id, nickname, make, model, year, vin, status)
+            VALUES ('vehicle-elantra-2013', '2013 Elantra', 'Hyundai', 'Elantra', 2013, NULL, 'retired')
+            ON CONFLICT (id) DO NOTHING
+        """)
+
+        // A4
+        for table in ["mileage_records", "mileage_snapshots", "service_records", "service_thresholds",
+                      "obd_connection_logs", "tires", "tire_rotations", "tire_tread_readings"] {
+            try await executeNoResult("""
+                ALTER TABLE \(table) ADD COLUMN IF NOT EXISTS vehicle_id TEXT REFERENCES vehicles(id)
+            """)
+        }
+
+        // A5
+        try await executeNoResult("""
+            ALTER TABLE obd_connection_logs ADD COLUMN IF NOT EXISTS duration_ms INTEGER
+        """)
+
+        // A6
+        try await executeNoResult("""
+            CREATE TABLE IF NOT EXISTS unassigned_readings (
+                id                       TEXT PRIMARY KEY,
+                timestamp                TIMESTAMPTZ NOT NULL,
+                failure_reason           TEXT NOT NULL,
+                vin_raw_response         TEXT,
+                peripheral_id            TEXT,
+                capture_mode             TEXT,
+                rpm                      INTEGER,
+                odometer_raw_response    TEXT,
+                dist_since_codes_cleared DOUBLE PRECISION,
+                dist_raw_response        TEXT,
+                assigned_vehicle_id      TEXT REFERENCES vehicles(id),
+                assigned_at              TIMESTAMPTZ,
+                created_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
+        // A7
+        let indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_mileage_records_vehicle_ts ON mileage_records (vehicle_id, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_mileage_snapshots_vehicle_ts ON mileage_snapshots (vehicle_id, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_service_records_vehicle_type_ts ON service_records (vehicle_id, service_type, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_obd_logs_vehicle_event_ts ON obd_connection_logs (vehicle_id, event_type, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_tires_vehicle ON tires (vehicle_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tire_rotations_vehicle_ts ON tire_rotations (vehicle_id, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_tread_vehicle_tire_ts ON tire_tread_readings (vehicle_id, tire_id, timestamp DESC)",
+        ]
+        for sql in indexes {
+            try await executeNoResult(sql)
+        }
+
+        // Phase B
+        try await executeNoResult("""
+            DO $$
+            DECLARE
+                elantra        constant text := 'vehicle-elantra-2013';
+                cutoff         timestamptz;
+                pk_name        text;
+                pk_has_vehicle boolean;
+            BEGIN
+                PERFORM pg_advisory_xact_lock(hashtext('multi_car_v1'));
+                IF EXISTS (SELECT 1 FROM schema_migrations WHERE name = 'multi_car_v1') THEN
+                    RETURN;
+                END IF;
+
+                UPDATE mileage_records     SET vehicle_id = elantra WHERE vehicle_id IS NULL;
+                UPDATE mileage_snapshots   SET vehicle_id = elantra WHERE vehicle_id IS NULL;
+                UPDATE service_records     SET vehicle_id = elantra WHERE vehicle_id IS NULL;
+                UPDATE service_thresholds  SET vehicle_id = elantra WHERE vehicle_id IS NULL;
+                UPDATE tires               SET vehicle_id = elantra WHERE vehicle_id IS NULL;
+                UPDATE tire_rotations      SET vehicle_id = elantra WHERE vehicle_id IS NULL;
+                UPDATE tire_tread_readings SET vehicle_id = elantra WHERE vehicle_id IS NULL;
+                SELECT created_at INTO cutoff FROM vehicles WHERE id = elantra;
+                UPDATE obd_connection_logs SET vehicle_id = elantra
+                 WHERE vehicle_id IS NULL AND timestamp < cutoff;
+
+                ALTER TABLE mileage_records     ALTER COLUMN vehicle_id SET NOT NULL;
+                ALTER TABLE mileage_snapshots   ALTER COLUMN vehicle_id SET NOT NULL;
+                ALTER TABLE service_records     ALTER COLUMN vehicle_id SET NOT NULL;
+                ALTER TABLE service_thresholds  ALTER COLUMN vehicle_id SET NOT NULL;
+                ALTER TABLE tires               ALTER COLUMN vehicle_id SET NOT NULL;
+                ALTER TABLE tire_rotations      ALTER COLUMN vehicle_id SET NOT NULL;
+                ALTER TABLE tire_tread_readings ALTER COLUMN vehicle_id SET NOT NULL;
+
+                SELECT c.conname,
+                       EXISTS (SELECT 1 FROM pg_attribute a
+                                WHERE a.attrelid = c.conrelid
+                                  AND a.attnum = ANY (c.conkey)
+                                  AND a.attname = 'vehicle_id')
+                  INTO pk_name, pk_has_vehicle
+                  FROM pg_constraint c
+                 WHERE c.conrelid = 'service_thresholds'::regclass AND c.contype = 'p';
+
+                IF NOT coalesce(pk_has_vehicle, false) THEN
+                    IF pk_name IS NOT NULL THEN
+                        EXECUTE format('ALTER TABLE service_thresholds DROP CONSTRAINT %I', pk_name);
+                    END IF;
+                    ALTER TABLE service_thresholds
+                        ADD CONSTRAINT service_thresholds_pkey PRIMARY KEY (vehicle_id, service_type);
+                END IF;
+
+                INSERT INTO schema_migrations (name) VALUES ('multi_car_v1');
+            END $$
+        """)
+
+        let done = try await execute("SELECT 1 AS ok FROM schema_migrations WHERE name = 'multi_car_v1'")
+        isMultiCarReady = !done.isEmpty
+        Log.db("multi-car migration \(isMultiCarReady ? "confirmed" : "NOT confirmed")")
+    }
+
     /// Backfill historical retired tires from reconstructed + user-confirmed
     /// history. Deterministic ids + ON CONFLICT DO NOTHING make this idempotent,
     /// so it runs every launch but only inserts rows that are missing. Old
@@ -284,6 +446,7 @@ actor NeonRepository {
         for r in retired {
             let tire = Tire(
                 id: r.0,
+                vehicleId: Vehicle.elantraId,
                 position: nil,
                 makeModel: r.1,
                 installOdometer: r.2,
@@ -298,8 +461,9 @@ actor NeonRepository {
         Log.db("retired tires backfilled (\(retired.count) rows)")
     }
 
+    /// Elantra-only seed (its reconstructed layout); never touches other cars.
     private func seedTires() async throws {
-        let rows = try await execute("SELECT COUNT(*) as cnt FROM tires")
+        let rows = try await execute("SELECT COUNT(*) as cnt FROM tires WHERE vehicle_id = $1", params: [Vehicle.elantraId])
         let count = parseInt(rows.first?["cnt"]) ?? 0
         guard count == 0 else {
             Log.db("tires already seeded (\(count) rows)")
@@ -322,14 +486,15 @@ actor NeonRepository {
             (.RR, "Yokohama GTX 91V", 176125, "2026-01-22"),
         ]
         for t in seed {
-            let tire = Tire.new(position: t.0, makeModel: t.1, installOdometer: t.2, installDate: dateFrom(t.3))
+            let tire = Tire.new(vehicleId: Vehicle.elantraId, position: t.0, makeModel: t.1, installOdometer: t.2, installDate: dateFrom(t.3))
             try await saveTire(tire)
         }
         Log.db("tires seeded (\(seed.count) rows)")
     }
 
+    /// Elantra-only seed. New cars get a copy of the Elantra's rows when created.
     private func seedThresholds() async throws {
-        let rows = try await execute("SELECT COUNT(*) as cnt FROM service_thresholds")
+        let rows = try await execute("SELECT COUNT(*) as cnt FROM service_thresholds WHERE vehicle_id = $1", params: [Vehicle.elantraId])
         let count = parseInt(rows.first?["cnt"]) ?? 0
         guard count == 0 else {
             Log.db("thresholds already seeded (\(count) rows)")
@@ -354,9 +519,9 @@ actor NeonRepository {
 
         for t in thresholds {
             try await executeNoResult("""
-                INSERT INTO service_thresholds (service_type, miles_critical, miles_warning, days_critical, days_warning, rotor_critical, rotor_warning)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (service_type) DO NOTHING
+                INSERT INTO service_thresholds (service_type, miles_critical, miles_warning, days_critical, days_warning, rotor_critical, rotor_warning, vehicle_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (vehicle_id, service_type) DO NOTHING
             """, params: [
                 t.0,
                 t.1 as Any,
@@ -364,7 +529,8 @@ actor NeonRepository {
                 t.3 as Any,
                 t.4 as Any,
                 t.5 as Any,
-                t.6 as Any
+                t.6 as Any,
+                Vehicle.elantraId
             ])
         }
         Log.db("thresholds seeded")
@@ -426,20 +592,179 @@ actor NeonRepository {
         Log.db("service categories seeded (\(categories.count) rows)")
     }
 
+    // MARK: - Vehicles
+
+    private let vehicleColumns = "id, nickname, make, model, year, vin, status, created_at"
+
+    func getVehicle(id: String) async throws -> Vehicle? {
+        let rows = try await execute("SELECT \(vehicleColumns) FROM vehicles WHERE id = $1", params: [id])
+        return rows.first.flatMap { parseVehicle($0) }
+    }
+
+    func getVehicle(byVIN vin: String) async throws -> Vehicle? {
+        let rows = try await execute("SELECT \(vehicleColumns) FROM vehicles WHERE vin = $1", params: [vin.uppercased()])
+        return rows.first.flatMap { parseVehicle($0) }
+    }
+
+    /// Newest first.
+    func getActiveVehicles() async throws -> [Vehicle] {
+        let rows = try await execute("SELECT \(vehicleColumns) FROM vehicles WHERE status = 'active' ORDER BY created_at DESC")
+        return rows.compactMap { parseVehicle($0) }
+    }
+
+    /// Newest first.
+    func getAllVehicles() async throws -> [Vehicle] {
+        let rows = try await execute("SELECT \(vehicleColumns) FROM vehicles ORDER BY created_at DESC")
+        return rows.compactMap { parseVehicle($0) }
+    }
+
+    /// Insert a vehicle and, in the same statement (so the same transaction),
+    /// copy `thresholdsFrom`'s service thresholds to it. If the VIN or id
+    /// already exists nothing is inserted or copied; the stored row is returned.
+    @discardableResult
+    func createVehicle(_ vehicle: Vehicle, copyingThresholdsFrom sourceId: String? = nil) async throws -> Vehicle {
+        let vin = vehicle.vin?.uppercased()
+        let params: [Any] = [
+            vehicle.id, vehicle.nickname as Any, vehicle.make as Any, vehicle.model as Any,
+            vehicle.year as Any, vin as Any, vehicle.status.rawValue
+        ]
+        if let sourceId {
+            try await executeNoResult("""
+                WITH v AS (
+                    INSERT INTO vehicles (id, nickname, make, model, year, vin, status)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT DO NOTHING
+                    RETURNING id
+                )
+                INSERT INTO service_thresholds (vehicle_id, service_type, miles_critical, miles_warning,
+                                                days_critical, days_warning, rotor_critical, rotor_warning)
+                SELECT v.id, st.service_type, st.miles_critical, st.miles_warning,
+                       st.days_critical, st.days_warning, st.rotor_critical, st.rotor_warning
+                FROM v CROSS JOIN service_thresholds st
+                WHERE st.vehicle_id = $8
+                ON CONFLICT (vehicle_id, service_type) DO NOTHING
+            """, params: params + [sourceId as Any])
+        } else {
+            try await executeNoResult("""
+                INSERT INTO vehicles (id, nickname, make, model, year, vin, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT DO NOTHING
+            """, params: params)
+        }
+        let stored: Vehicle?
+        if let vin {
+            stored = try await getVehicle(byVIN: vin)
+        } else {
+            stored = try await getVehicle(id: vehicle.id)
+        }
+        guard let stored else { throw NeonError.invalidResponse }
+        return stored
+    }
+
+    /// Copy every threshold row of one car to another. Safe to repeat.
+    func copyThresholds(from sourceId: String, to targetId: String) async throws {
+        try await executeNoResult("""
+            INSERT INTO service_thresholds (vehicle_id, service_type, miles_critical, miles_warning,
+                                            days_critical, days_warning, rotor_critical, rotor_warning)
+            SELECT $2::text, service_type, miles_critical, miles_warning,
+                   days_critical, days_warning, rotor_critical, rotor_warning
+            FROM service_thresholds WHERE vehicle_id = $1
+            ON CONFLICT (vehicle_id, service_type) DO NOTHING
+        """, params: [sourceId, targetId])
+    }
+
+    func setVehicleStatus(id: String, status: VehicleStatus) async throws {
+        try await executeNoResult("UPDATE vehicles SET status = $2 WHERE id = $1", params: [id, status.rawValue])
+    }
+
+    private func parseVehicle(_ row: [String: Any]) -> Vehicle? {
+        guard let id = parseString(row["id"]) else {
+            Log.db("failed to parse vehicle: \(row)")
+            return nil
+        }
+        return Vehicle(
+            id: id,
+            nickname: parseString(row["nickname"]),
+            make: parseString(row["make"]),
+            model: parseString(row["model"]),
+            year: parseInt(row["year"]),
+            vin: parseString(row["vin"]),
+            status: parseString(row["status"]).flatMap { VehicleStatus(rawValue: $0) } ?? .active,
+            createdAt: parseDate(row["created_at"])
+        )
+    }
+
+    // MARK: - Unassigned Readings
+
+    func saveUnassignedReading(_ r: UnassignedReading) async throws {
+        try await executeNoResult("""
+            INSERT INTO unassigned_readings (id, timestamp, failure_reason, vin_raw_response, peripheral_id,
+                capture_mode, rpm, odometer_raw_response, dist_since_codes_cleared, dist_raw_response)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (id) DO NOTHING
+        """, params: [
+            r.id, r.timestamp, r.failureReason, r.vinRawResponse as Any, r.peripheralId as Any,
+            r.captureMode as Any, r.rpm as Any, r.odometerRawResponse as Any,
+            r.distSinceCodesCleared as Any, r.distRawResponse as Any
+        ])
+    }
+
+    /// Readings not yet assigned to a car, newest first.
+    func getUnassignedReadings() async throws -> [UnassignedReading] {
+        let rows = try await execute("""
+            SELECT id, timestamp, failure_reason, vin_raw_response, peripheral_id, capture_mode, rpm,
+                   odometer_raw_response, dist_since_codes_cleared, dist_raw_response, assigned_vehicle_id, assigned_at
+            FROM unassigned_readings WHERE assigned_vehicle_id IS NULL ORDER BY timestamp DESC
+        """)
+        return rows.compactMap { row in
+            guard let id = parseString(row["id"]),
+                  let reason = parseString(row["failure_reason"]) else { return nil }
+            return UnassignedReading(
+                id: id,
+                timestamp: parseDate(row["timestamp"]) ?? Date(),
+                failureReason: reason,
+                vinRawResponse: parseString(row["vin_raw_response"]),
+                peripheralId: parseString(row["peripheral_id"]),
+                captureMode: parseString(row["capture_mode"]),
+                rpm: parseInt(row["rpm"]),
+                odometerRawResponse: parseString(row["odometer_raw_response"]),
+                distSinceCodesCleared: parseDouble(row["dist_since_codes_cleared"]),
+                distRawResponse: parseString(row["dist_raw_response"]),
+                assignedVehicleId: parseString(row["assigned_vehicle_id"]),
+                assignedAt: parseDate(row["assigned_at"])
+            )
+        }
+    }
+
+    func markUnassignedReadingAssigned(id: String, vehicleId: String) async throws {
+        try await executeNoResult("""
+            UPDATE unassigned_readings SET assigned_vehicle_id = $2, assigned_at = now() WHERE id = $1
+        """, params: [id, vehicleId])
+    }
+
+    func deleteUnassignedReading(id: String) async throws {
+        try await executeNoResult("DELETE FROM unassigned_readings WHERE id = $1", params: [id])
+    }
+
     // MARK: - Mileage Records
 
+    private let mileageColumns = "id, vehicle_id, timestamp, odometer_miles, source, dist_since_codes_cleared"
+
     func saveMileageRecord(_ record: MileageRecord) async throws {
+        let vehicleId = try requireVehicle(record.vehicleId)
         Log.db("saving mileage record")
         try await executeNoResult("""
-            INSERT INTO mileage_records (id, timestamp, odometer_miles, source, dist_since_codes_cleared)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO mileage_records (id, timestamp, odometer_miles, source, dist_since_codes_cleared, vehicle_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (id) DO NOTHING
-        """, params: [record.id, record.timestamp, record.odometerMiles, record.source, record.distSinceCodesCleared as Any])
+        """, params: [record.id, record.timestamp, record.odometerMiles, record.source, record.distSinceCodesCleared as Any, vehicleId])
         Log.db("record saved")
     }
 
-    func getMileageRecords() async throws -> [MileageRecord] {
-        let rows = try await execute("SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records ORDER BY timestamp DESC")
+    func getMileageRecords(vehicleId: String) async throws -> [MileageRecord] {
+        let rows = try await execute("""
+            SELECT \(mileageColumns) FROM mileage_records WHERE \(vehicleFilter(1)) ORDER BY timestamp DESC
+        """, params: [vehicleId])
         return rows.compactMap { parseMileageRecord($0) }
     }
 
@@ -453,13 +778,13 @@ actor NeonRepository {
         try await executeNoResult("DELETE FROM mileage_records WHERE id = $1", params: [id])
     }
 
-    func getTodayBLEAutoRecord() async throws -> MileageRecord? {
-        // Get the most recent BLE_AUTO record, then check date in Swift (avoids Postgres timezone issues)
+    func getTodayBLEAutoRecord(vehicleId: String) async throws -> MileageRecord? {
+        // Get this car's most recent BLE_AUTO record, then check date in Swift (avoids Postgres timezone issues)
         let rows = try await execute("""
-            SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records
-            WHERE source = 'BLE_AUTO'
+            SELECT \(mileageColumns) FROM mileage_records
+            WHERE source = 'BLE_AUTO' AND \(vehicleFilter(1))
             ORDER BY timestamp DESC LIMIT 1
-        """)
+        """, params: [vehicleId])
         guard let record = rows.first.flatMap({ parseMileageRecord($0) }) else { return nil }
 
         // Compare dates in local timezone
@@ -470,50 +795,54 @@ actor NeonRepository {
         return nil
     }
 
-    func getLatestMileageRecord() async throws -> MileageRecord? {
+    func getLatestMileageRecord(vehicleId: String) async throws -> MileageRecord? {
         let rows = try await execute("""
-            SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records
+            SELECT \(mileageColumns) FROM mileage_records
+            WHERE \(vehicleFilter(1))
             ORDER BY timestamp DESC LIMIT 1
-        """)
+        """, params: [vehicleId])
         return rows.first.flatMap { parseMileageRecord($0) }
     }
 
-    /// Get the latest MANUAL entry — this is the reference point for mileage calculation
-    func getLatestManualMileageRecord() async throws -> MileageRecord? {
+    /// Get this car's latest MANUAL entry — the reference point for its mileage calculation
+    func getLatestManualMileageRecord(vehicleId: String) async throws -> MileageRecord? {
         let rows = try await execute("""
-            SELECT id, timestamp, odometer_miles, source, dist_since_codes_cleared FROM mileage_records
-            WHERE source = 'MANUAL' ORDER BY timestamp DESC LIMIT 1
-        """)
+            SELECT \(mileageColumns) FROM mileage_records
+            WHERE source = 'MANUAL' AND \(vehicleFilter(1)) ORDER BY timestamp DESC LIMIT 1
+        """, params: [vehicleId])
         return rows.first.flatMap { parseMileageRecord($0) }
     }
 
     // MARK: - Service Records
 
+    private let serviceColumns = "id, vehicle_id, timestamp, service_type, category, odometer_miles, rotor_thickness_mm, amount, comments, manually_edited"
+
     func saveServiceRecord(_ record: ServiceRecord) async throws {
+        let vehicleId = try requireVehicle(record.vehicleId)
         try await executeNoResult("""
-            INSERT INTO service_records (id, timestamp, service_type, category, odometer_miles, rotor_thickness_mm, amount, comments, manually_edited)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO service_records (id, timestamp, service_type, category, odometer_miles, rotor_thickness_mm, amount, comments, manually_edited, vehicle_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (id) DO NOTHING
         """, params: [
             record.id, record.timestamp, record.serviceType, record.category,
             record.odometerMiles, record.rotorThicknessMM as Any,
-            record.amount as Any, record.comments as Any, record.manuallyEdited
+            record.amount as Any, record.comments as Any, record.manuallyEdited, vehicleId
         ])
     }
 
-    func getServiceRecords() async throws -> [ServiceRecord] {
+    func getServiceRecords(vehicleId: String) async throws -> [ServiceRecord] {
         let rows = try await execute("""
-            SELECT id, timestamp, service_type, category, odometer_miles, rotor_thickness_mm, amount, comments, manually_edited
-            FROM service_records ORDER BY timestamp DESC
-        """)
+            SELECT \(serviceColumns)
+            FROM service_records WHERE \(vehicleFilter(1)) ORDER BY timestamp DESC
+        """, params: [vehicleId])
         return rows.compactMap { parseServiceRecord($0) }
     }
 
-    func getLatestRecord(for serviceType: String) async throws -> ServiceRecord? {
+    func getLatestRecord(for serviceType: String, vehicleId: String) async throws -> ServiceRecord? {
         let rows = try await execute("""
-            SELECT id, timestamp, service_type, category, odometer_miles, rotor_thickness_mm, amount, comments, manually_edited
-            FROM service_records WHERE service_type = $1 ORDER BY timestamp DESC LIMIT 1
-        """, params: [serviceType])
+            SELECT \(serviceColumns)
+            FROM service_records WHERE service_type = $1 AND \(vehicleFilter(2)) ORDER BY timestamp DESC LIMIT 1
+        """, params: [serviceType, vehicleId])
         return rows.first.flatMap { parseServiceRecord($0) }
     }
 
@@ -535,14 +864,14 @@ actor NeonRepository {
 
     // MARK: - OBD Connection Logs
 
-    func saveMileageSnapshot(odometer: Double, distSinceCodesCleared: Double?, rpm: Int?, captureMode: String) async {
+    func saveMileageSnapshot(vehicleId: String, odometer: Double, distSinceCodesCleared: Double?, rpm: Int?, captureMode: String) async {
         do {
             try await executeNoResult("""
-                INSERT INTO mileage_snapshots (id, timestamp, odometer_miles, dist_since_codes_cleared, rpm, capture_mode)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO mileage_snapshots (id, timestamp, odometer_miles, dist_since_codes_cleared, rpm, capture_mode, vehicle_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
             """, params: [
                 UUID().uuidString, Date(), odometer,
-                distSinceCodesCleared as Any, rpm as Any, captureMode
+                distSinceCodesCleared as Any, rpm as Any, captureMode, vehicleId
             ])
             // Purge old snapshots (keep 7 days)
             try await executeNoResult("""
@@ -553,28 +882,32 @@ actor NeonRepository {
         }
     }
 
-    func logOBDEvent(eventType: String, pid: String?, rawResponse: String?, parsedValue: Double?, success: Bool, errorMessage: String?) async {
+    /// `vehicleId` has no default on purpose: every call site must say which car
+    /// (nil only before the VIN is known).
+    func logOBDEvent(vehicleId: String?, eventType: String, pid: String?, rawResponse: String?,
+                     parsedValue: Double?, success: Bool, errorMessage: String?, durationMs: Int?) async {
         do {
             try await executeNoResult("""
-                INSERT INTO obd_connection_logs (id, timestamp, event_type, pid, raw_response, parsed_value, success, error_message)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                INSERT INTO obd_connection_logs (id, timestamp, event_type, pid, raw_response, parsed_value, success, error_message, vehicle_id, duration_ms)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             """, params: [
                 UUID().uuidString, Date(), eventType,
                 pid as Any, rawResponse as Any, parsedValue as Any,
-                success, errorMessage as Any
+                success, errorMessage as Any, vehicleId as Any, durationMs as Any
             ])
         } catch {
             Log.db("failed to log OBD event: \(error.localizedDescription)")
         }
     }
 
-    /// Get the latest dist_since_codes_cleared value from OBD logs
-    func getOBDDistSinceCleared() async throws -> Double? {
+    /// Latest successful 0131 value logged for this car. Strict match: a log
+    /// with no car means "car unknown", never the Elantra.
+    func getOBDDistSinceCleared(vehicleId: String) async throws -> Double? {
         let rows = try await execute("""
             SELECT parsed_value FROM obd_connection_logs
-            WHERE event_type = 'dist_since_clear' AND success = true
+            WHERE event_type = 'dist_since_clear' AND success = true AND vehicle_id = $1
             ORDER BY timestamp DESC LIMIT 1
-        """)
+        """, params: [vehicleId])
         return parseDouble(rows.first?["parsed_value"])
     }
 
@@ -697,32 +1030,34 @@ actor NeonRepository {
 
     // MARK: - Tires
 
-    func getActiveTires() async throws -> [Tire] {
+    private let tireColumns = "id, vehicle_id, position, make_model, install_odometer, install_date, removed_odometer, removed_date, replaces_tire_id, notes"
+
+    func getActiveTires(vehicleId: String) async throws -> [Tire] {
         let rows = try await execute("""
-            SELECT id, position, make_model, install_odometer, install_date, removed_odometer, removed_date, replaces_tire_id, notes
-            FROM tires WHERE removed_odometer IS NULL
-        """)
+            SELECT \(tireColumns)
+            FROM tires WHERE removed_odometer IS NULL AND \(vehicleFilter(1))
+        """, params: [vehicleId])
         return rows.compactMap { parseTire($0) }
     }
 
-    func getAllTires() async throws -> [Tire] {
+    func getAllTires(vehicleId: String) async throws -> [Tire] {
         let rows = try await execute("""
-            SELECT id, position, make_model, install_odometer, install_date, removed_odometer, removed_date, replaces_tire_id, notes
-            FROM tires ORDER BY install_date DESC
-        """)
+            SELECT \(tireColumns)
+            FROM tires WHERE \(vehicleFilter(1)) ORDER BY install_date DESC
+        """, params: [vehicleId])
         return rows.compactMap { parseTire($0) }
     }
 
     func saveTire(_ tire: Tire) async throws {
         try await executeNoResult("""
-            INSERT INTO tires (id, position, make_model, install_odometer, install_date, removed_odometer, removed_date, replaces_tire_id, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO tires (id, position, make_model, install_odometer, install_date, removed_odometer, removed_date, replaces_tire_id, notes, vehicle_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (id) DO NOTHING
         """, params: [
             tire.id, tire.position?.rawValue as Any, tire.makeModel as Any,
             tire.installOdometer, tire.installDate,
             tire.removedOdometer as Any, tire.removedDate as Any,
-            tire.replacesTireId as Any, tire.notes as Any
+            tire.replacesTireId as Any, tire.notes as Any, tire.vehicleId
         ])
     }
 
@@ -746,7 +1081,7 @@ actor NeonRepository {
     /// Persist an edited tire, swapping corners with any active tire already in
     /// the destination so two tires never occupy the same corner.
     func updateTireResolvingPosition(_ tire: Tire) async throws {
-        let active = try await getActiveTires()
+        let active = try await getActiveTires(vehicleId: tire.vehicleId)
         let updates = TireMove.resolve(activeTires: active, moving: tire.id, to: tire.position)
         for u in updates where u.id != tire.id {
             if var occupant = active.first(where: { $0.id == u.id }) {
@@ -760,8 +1095,8 @@ actor NeonRepository {
     /// Retire the active tire at `position` and install a new one in its place,
     /// linking the new tire to the retired one (1:1 lineage).
     @discardableResult
-    func replaceTire(at position: TirePosition, makeModel: String?, odometer: Double, date: Date, notes: String?) async throws -> Tire {
-        let active = try await getActiveTires()
+    func replaceTire(vehicleId: String, at position: TirePosition, makeModel: String?, odometer: Double, date: Date, notes: String?) async throws -> Tire {
+        let active = try await getActiveTires(vehicleId: vehicleId)
         var replacesId: String? = nil
         if var old = active.first(where: { $0.position == position }) {
             old.removedOdometer = odometer
@@ -770,55 +1105,56 @@ actor NeonRepository {
             try await updateTire(old)
             replacesId = old.id
         }
-        let new = Tire.new(position: position, makeModel: makeModel, installOdometer: odometer, installDate: date, notes: notes, replacesTireId: replacesId)
+        let new = Tire.new(vehicleId: vehicleId, position: position, makeModel: makeModel, installOdometer: odometer, installDate: date, notes: notes, replacesTireId: replacesId)
         try await saveTire(new)
         return new
     }
 
     /// Apply a rotation mapping (old corner → new corner) to the active tires and log it.
-    func applyRotation(mapping: [TirePosition: TirePosition], odometer: Double, date: Date, pattern: String, comments: String?) async throws {
-        let active = try await getActiveTires()
+    func applyRotation(vehicleId: String, mapping: [TirePosition: TirePosition], odometer: Double, date: Date, pattern: String, comments: String?) async throws {
+        let active = try await getActiveTires(vehicleId: vehicleId)
         for var tire in active {
             guard let pos = tire.position, let newPos = mapping[pos] else { continue }
             tire.position = newPos
             try await updateTire(tire)
         }
-        try await saveTireRotation(TireRotation.new(odometer: odometer, date: date, pattern: pattern, comments: comments))
+        try await saveTireRotation(TireRotation.new(vehicleId: vehicleId, odometer: odometer, date: date, pattern: pattern, comments: comments))
     }
 
     func saveTireRotation(_ rotation: TireRotation) async throws {
         try await executeNoResult("""
-            INSERT INTO tire_rotations (id, timestamp, odometer_miles, pattern, comments)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO tire_rotations (id, timestamp, odometer_miles, pattern, comments, vehicle_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (id) DO NOTHING
         """, params: [
-            rotation.id, rotation.timestamp, rotation.odometer, rotation.pattern, rotation.comments as Any
+            rotation.id, rotation.timestamp, rotation.odometer, rotation.pattern, rotation.comments as Any, rotation.vehicleId
         ])
     }
 
     func saveTreadReading(_ reading: TireTreadReading) async throws {
         try await executeNoResult("""
-            INSERT INTO tire_tread_readings (id, tire_id, timestamp, odometer_miles, depth_32nds)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO tire_tread_readings (id, tire_id, timestamp, odometer_miles, depth_32nds, vehicle_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (id) DO NOTHING
         """, params: [
-            reading.id, reading.tireId, reading.timestamp, reading.odometer, reading.depth32nds
+            reading.id, reading.tireId, reading.timestamp, reading.odometer, reading.depth32nds, reading.vehicleId
         ])
     }
 
-    func getAllTreadReadings() async throws -> [TireTreadReading] {
+    func getAllTreadReadings(vehicleId: String) async throws -> [TireTreadReading] {
         let rows = try await execute("""
-            SELECT id, tire_id, timestamp, odometer_miles, depth_32nds FROM tire_tread_readings ORDER BY timestamp ASC
-        """)
+            SELECT id, vehicle_id, tire_id, timestamp, odometer_miles, depth_32nds FROM tire_tread_readings
+            WHERE \(vehicleFilter(1)) ORDER BY timestamp ASC
+        """, params: [vehicleId])
         return rows.compactMap { parseTreadReading($0) }
     }
 
     /// Latest reading per tire, keyed by tire id — for showing current tread.
-    func getLatestTreadReadingsByTire() async throws -> [String: TireTreadReading] {
+    func getLatestTreadReadingsByTire(vehicleId: String) async throws -> [String: TireTreadReading] {
         let rows = try await execute("""
-            SELECT DISTINCT ON (tire_id) id, tire_id, timestamp, odometer_miles, depth_32nds
-            FROM tire_tread_readings ORDER BY tire_id, timestamp DESC
-        """)
+            SELECT DISTINCT ON (tire_id) id, vehicle_id, tire_id, timestamp, odometer_miles, depth_32nds
+            FROM tire_tread_readings WHERE \(vehicleFilter(1)) ORDER BY tire_id, timestamp DESC
+        """, params: [vehicleId])
         var map: [String: TireTreadReading] = [:]
         for row in rows {
             if let r = parseTreadReading(row) { map[r.tireId] = r }
@@ -836,6 +1172,7 @@ actor NeonRepository {
         }
         return TireTreadReading(
             id: id,
+            vehicleId: parseString(row["vehicle_id"]) ?? Vehicle.elantraId,
             tireId: tireId,
             timestamp: parseDate(row["timestamp"]) ?? Date(),
             odometer: odometer,
@@ -843,16 +1180,18 @@ actor NeonRepository {
         )
     }
 
-    func getTireRotations() async throws -> [TireRotation] {
+    func getTireRotations(vehicleId: String) async throws -> [TireRotation] {
         let rows = try await execute("""
-            SELECT id, timestamp, odometer_miles, pattern, comments FROM tire_rotations ORDER BY timestamp DESC
-        """)
+            SELECT id, vehicle_id, timestamp, odometer_miles, pattern, comments FROM tire_rotations
+            WHERE \(vehicleFilter(1)) ORDER BY timestamp DESC
+        """, params: [vehicleId])
         return rows.compactMap { row in
             guard let id = parseString(row["id"]),
                   let odometer = parseDouble(row["odometer_miles"]) else { return nil }
             let timestamp = parseDate(row["timestamp"]) ?? Date()
             return TireRotation(
                 id: id,
+                vehicleId: parseString(row["vehicle_id"]) ?? Vehicle.elantraId,
                 timestamp: timestamp,
                 odometer: odometer,
                 pattern: parseString(row["pattern"]) ?? "",
@@ -870,6 +1209,7 @@ actor NeonRepository {
         let installDate = parseDate(row["install_date"]) ?? Date()
         return Tire(
             id: id,
+            vehicleId: parseString(row["vehicle_id"]) ?? Vehicle.elantraId,
             position: parseString(row["position"]).flatMap { TirePosition(rawValue: $0) },
             makeModel: parseString(row["make_model"]),
             installOdometer: installOdometer,
@@ -881,8 +1221,8 @@ actor NeonRepository {
         )
     }
 
-    func getThresholds() async throws -> [ServiceThreshold] {
-        let rows = try await execute("SELECT * FROM service_thresholds")
+    func getThresholds(vehicleId: String) async throws -> [ServiceThreshold] {
+        let rows = try await execute("SELECT * FROM service_thresholds WHERE \(vehicleFilter(1))", params: [vehicleId])
         return rows.compactMap { row in
             guard let serviceType = parseString(row["service_type"]) else { return nil }
             return ServiceThreshold(
@@ -892,21 +1232,22 @@ actor NeonRepository {
                 daysCritical: parseInt(row["days_critical"]),
                 daysWarning: parseInt(row["days_warning"]),
                 rotorCritical: parseDouble(row["rotor_critical"]),
-                rotorWarning: parseDouble(row["rotor_warning"])
+                rotorWarning: parseDouble(row["rotor_warning"]),
+                vehicleId: parseString(row["vehicle_id"]) ?? Vehicle.elantraId
             )
         }
     }
 
     // MARK: - Dashboard
 
-    func getDashboardData() async throws -> [DashboardRow] {
-        let thresholds = try await getThresholds()
-        let latestMileage = try await getLatestMileageRecord()
+    func getDashboardData(vehicleId: String) async throws -> [DashboardRow] {
+        let thresholds = try await getThresholds(vehicleId: vehicleId)
+        let latestMileage = try await getLatestMileageRecord(vehicleId: vehicleId)
         let currentOdometer = latestMileage?.odometerMiles ?? 0
 
         var rows: [DashboardRow] = []
         for threshold in thresholds {
-            let lastService = try await getLatestRecord(for: threshold.serviceType)
+            let lastService = try await getLatestRecord(for: threshold.serviceType, vehicleId: vehicleId)
             let lastMileage = lastService?.odometerMiles ?? 0
             let milesAfter = currentOdometer - lastMileage
             let lastDate = lastService?.timestamp
@@ -949,16 +1290,19 @@ actor NeonRepository {
         }
     }
 
-    func getTrackedItems() async throws -> [TrackedItem] {
-        let currentOdometer = try await getLatestMileageRecord()?.odometerMiles ?? 0
+    func getTrackedItems(vehicleId: String) async throws -> [TrackedItem] {
+        let currentOdometer = try await getLatestMileageRecord(vehicleId: vehicleId)?.odometerMiles ?? 0
+        // IS NOT DISTINCT FROM so the join also matches before the backfill (both NULL)
         let rows = try await execute("""
             SELECT DISTINCT ON (sr.service_type)
                 sr.service_type, sr.timestamp, sr.odometer_miles, sr.amount, sr.comments
             FROM service_records sr
-            LEFT JOIN service_thresholds st ON st.service_type = sr.service_type
-            WHERE st.service_type IS NULL
+            LEFT JOIN service_thresholds st
+                   ON st.service_type = sr.service_type
+                  AND st.vehicle_id IS NOT DISTINCT FROM sr.vehicle_id
+            WHERE st.service_type IS NULL AND \(vehicleFilter(1, column: "sr.vehicle_id"))
             ORDER BY sr.service_type, sr.timestamp DESC
-        """)
+        """, params: [vehicleId])
         let items: [TrackedItem] = rows.compactMap { row in
             guard let serviceType = parseString(row["service_type"]),
                   let odometer = parseDouble(row["odometer_miles"]) else {
@@ -1017,7 +1361,14 @@ actor NeonRepository {
         }
         let timestamp = parseDate(row["timestamp"]) ?? Date()
         let distSinceCodesCleared = parseDouble(row["dist_since_codes_cleared"])
-        return MileageRecord(id: id, timestamp: timestamp, odometerMiles: odometer, source: source, distSinceCodesCleared: distSinceCodesCleared)
+        return MileageRecord(
+            id: id,
+            vehicleId: parseString(row["vehicle_id"]) ?? Vehicle.elantraId,
+            timestamp: timestamp,
+            odometerMiles: odometer,
+            source: source,
+            distSinceCodesCleared: distSinceCodesCleared
+        )
     }
 
     private func parseServiceRecord(_ row: [String: Any]) -> ServiceRecord? {
@@ -1031,6 +1382,7 @@ actor NeonRepository {
         let timestamp = parseDate(row["timestamp"]) ?? Date()
         return ServiceRecord(
             id: id,
+            vehicleId: parseString(row["vehicle_id"]) ?? Vehicle.elantraId,
             timestamp: timestamp,
             serviceType: serviceType,
             category: category,
@@ -1062,12 +1414,14 @@ enum NeonError: LocalizedError {
     case invalidURL
     case invalidResponse
     case httpError(Int, String)
+    case missingVehicle
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Invalid Neon database URL"
         case .invalidResponse: return "Invalid response from server"
         case .httpError(let code, let msg): return "HTTP \(code): \(msg)"
+        case .missingVehicle: return "No vehicle selected for this record"
         }
     }
 }

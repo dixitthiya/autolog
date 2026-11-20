@@ -37,6 +37,14 @@ class SyncManager: ObservableObject {
         Log.sync("\(pending.count) pending records (added service)")
     }
 
+    func queueUnassignedReading(_ reading: UnassignedReading) {
+        var pending = getPendingRecords()
+        let wrapper = PendingRecord(type: .unassigned, mileageRecord: nil, serviceRecord: nil, unassignedReading: reading)
+        pending.append(wrapper)
+        savePendingRecords(pending)
+        Log.sync("\(pending.count) pending records (added unassigned reading)")
+    }
+
     func syncAll() async {
         var pending = getPendingRecords()
         guard !pending.isEmpty else { return }
@@ -48,14 +56,20 @@ class SyncManager: ObservableObject {
             guard record.retryCount <= Config.maxRetryCount else { continue }
 
             do {
+                // The car was stamped when the record was queued; only records
+                // queued before multi-car have none, and those are the Elantra's.
                 switch record.type {
                 case .mileage:
                     if let mr = record.mileageRecord {
-                        try await NeonRepository.shared.saveMileageRecord(mr)
+                        try await NeonRepository.shared.saveMileageRecord(mr.withLegacyVehicleIfMissing())
                     }
                 case .service:
                     if let sr = record.serviceRecord {
-                        try await NeonRepository.shared.saveServiceRecord(sr)
+                        try await NeonRepository.shared.saveServiceRecord(sr.withLegacyVehicleIfMissing())
+                    }
+                case .unassigned:
+                    if let ur = record.unassignedReading {
+                        try await NeonRepository.shared.saveUnassignedReading(ur)
                     }
                 }
                 synced.append(i)
@@ -86,10 +100,13 @@ class SyncManager: ObservableObject {
     }
 }
 
-private struct PendingRecord: Codable {
-    enum RecordType: String, Codable { case mileage, service }
+/// Stored as JSON in UserDefaults. New fields must stay optional so queues
+/// written by older builds still decode.
+struct PendingRecord: Codable {
+    enum RecordType: String, Codable { case mileage, service, unassigned }
     let type: RecordType
     let mileageRecord: MileageRecord?
     let serviceRecord: ServiceRecord?
+    var unassignedReading: UnassignedReading? = nil
     var retryCount: Int = 0
 }

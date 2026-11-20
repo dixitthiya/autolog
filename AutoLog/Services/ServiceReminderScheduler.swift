@@ -3,19 +3,14 @@ import UserNotifications
 
 struct ServiceReminderScheduler {
 
-    /// Recalculate and reschedule all service reminder notifications.
+    /// Recalculate and reschedule all service reminder notifications, for
+    /// active cars only (retired cars get none).
     /// Call on every app launch and after every OBD capture.
     static func reschedule() async {
         do {
-            let thresholds = try await NeonRepository.shared.getThresholds()
-            let mileageRecords = try await NeonRepository.shared.getMileageRecords()
-            let currentOdometer = mileageRecords
-                .sorted { $0.timestamp > $1.timestamp }
-                .first?.odometerMiles ?? 0
+            let vehicles = try await NeonRepository.shared.getActiveVehicles()
 
-            let milesPerDay = calculateMilesPerDay(from: mileageRecords)
-
-            // Remove all previously scheduled service reminders
+            // Remove all previously scheduled service reminders (incl. old single-car ids)
             let center = UNUserNotificationCenter.current()
             let pending = await center.pendingNotificationRequests()
             let reminderIDs = pending
@@ -23,60 +18,79 @@ struct ServiceReminderScheduler {
                 .map(\.identifier)
             center.removePendingNotificationRequests(withIdentifiers: reminderIDs)
 
-            // Schedule new reminders for each service
-            for threshold in thresholds {
-                let lastService = try await NeonRepository.shared.getLatestRecord(for: threshold.serviceType)
-                guard let lastService = lastService else { continue }
-
-                let milesSince = currentOdometer - lastService.odometerMiles
-                let daysSince = Calendar.current.dateComponents([.day], from: lastService.timestamp, to: Date()).day ?? 0
-
-                // Time-based reminders (exact)
-                scheduleTimeReminder(
-                    serviceType: threshold.serviceType,
-                    lastServiceDate: lastService.timestamp,
-                    daysThreshold: threshold.daysWarning,
-                    level: "warning",
-                    center: center
-                )
-                scheduleTimeReminder(
-                    serviceType: threshold.serviceType,
-                    lastServiceDate: lastService.timestamp,
-                    daysThreshold: threshold.daysCritical,
-                    level: "critical",
-                    center: center
-                )
-
-                // Mileage-based reminders (estimated)
-                scheduleMilesReminder(
-                    serviceType: threshold.serviceType,
-                    milesSince: milesSince,
-                    milesThreshold: threshold.milesWarning,
-                    milesPerDay: milesPerDay,
-                    level: "warning",
-                    center: center
-                )
-                scheduleMilesReminder(
-                    serviceType: threshold.serviceType,
-                    milesSince: milesSince,
-                    milesThreshold: threshold.milesCritical,
-                    milesPerDay: milesPerDay,
-                    level: "critical",
-                    center: center
-                )
+            for vehicle in vehicles {
+                try await schedule(for: vehicle, center: center)
             }
 
             let newPending = await center.pendingNotificationRequests()
             let scheduled = newPending.filter { $0.identifier.hasPrefix("service-reminder-") }.count
-            Log.notify("scheduled \(scheduled) service reminders (velocity: \(Int(milesPerDay)) mi/day)")
+            Log.notify("scheduled \(scheduled) service reminders for \(vehicles.count) active vehicle(s)")
         } catch {
             Log.notify("failed to schedule reminders: \(error.localizedDescription)")
         }
     }
 
+    private static func schedule(for vehicle: Vehicle, center: UNUserNotificationCenter) async throws {
+        let thresholds = try await NeonRepository.shared.getThresholds(vehicleId: vehicle.id)
+        let mileageRecords = try await NeonRepository.shared.getMileageRecords(vehicleId: vehicle.id)
+        let currentOdometer = mileageRecords
+            .sorted { $0.timestamp > $1.timestamp }
+            .first?.odometerMiles ?? 0
+
+        let milesPerDay = calculateMilesPerDay(from: mileageRecords)
+
+        // Schedule new reminders for each service
+        for threshold in thresholds {
+            let lastService = try await NeonRepository.shared.getLatestRecord(for: threshold.serviceType, vehicleId: vehicle.id)
+            guard let lastService = lastService else { continue }
+
+            let milesSince = currentOdometer - lastService.odometerMiles
+
+            // Time-based reminders (exact)
+            scheduleTimeReminder(
+                vehicle: vehicle,
+                serviceType: threshold.serviceType,
+                lastServiceDate: lastService.timestamp,
+                daysThreshold: threshold.daysWarning,
+                level: "warning",
+                center: center
+            )
+            scheduleTimeReminder(
+                vehicle: vehicle,
+                serviceType: threshold.serviceType,
+                lastServiceDate: lastService.timestamp,
+                daysThreshold: threshold.daysCritical,
+                level: "critical",
+                center: center
+            )
+
+            // Mileage-based reminders (estimated)
+            scheduleMilesReminder(
+                vehicle: vehicle,
+                serviceType: threshold.serviceType,
+                milesSince: milesSince,
+                milesThreshold: threshold.milesWarning,
+                milesPerDay: milesPerDay,
+                level: "warning",
+                center: center
+            )
+            scheduleMilesReminder(
+                vehicle: vehicle,
+                serviceType: threshold.serviceType,
+                milesSince: milesSince,
+                milesThreshold: threshold.milesCritical,
+                milesPerDay: milesPerDay,
+                level: "critical",
+                center: center
+            )
+        }
+        Log.notify("\(vehicle.displayName): velocity \(Int(milesPerDay)) mi/day")
+    }
+
     // MARK: - Time-Based (Exact)
 
     private static func scheduleTimeReminder(
+        vehicle: Vehicle,
         serviceType: String,
         lastServiceDate: Date,
         daysThreshold: Int?,
@@ -96,15 +110,15 @@ struct ServiceReminderScheduler {
         let content = UNMutableNotificationContent()
         if level == "critical" {
             content.title = "Service Overdue"
-            content.body = "\(serviceType): \(days) days since last service — schedule now"
+            content.body = "\(vehicle.displayName) · \(serviceType): \(days) days since last service — schedule now"
         } else {
             content.title = "Service Reminder"
-            content.body = "\(serviceType): Due soon — \(days) days since last service"
+            content.body = "\(vehicle.displayName) · \(serviceType): Due soon — \(days) days since last service"
         }
         content.sound = .default
 
         let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
-        let id = "service-reminder-time-\(level)-\(serviceType)"
+        let id = "service-reminder-\(vehicle.id)-time-\(level)-\(serviceType)"
         let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
 
         center.add(request) { error in
@@ -117,6 +131,7 @@ struct ServiceReminderScheduler {
     // MARK: - Mileage-Based (Estimated)
 
     private static func scheduleMilesReminder(
+        vehicle: Vehicle,
         serviceType: String,
         milesSince: Double,
         milesThreshold: Double?,
@@ -140,15 +155,15 @@ struct ServiceReminderScheduler {
         let content = UNMutableNotificationContent()
         if level == "critical" {
             content.title = "Service Estimated Overdue"
-            content.body = "\(serviceType): ~\(Int(threshold).formatted()) mi since last service (estimated from recent driving)"
+            content.body = "\(vehicle.displayName) · \(serviceType): ~\(Int(threshold).formatted()) mi since last service (estimated from recent driving)"
         } else {
             content.title = "Service Estimate"
-            content.body = "\(serviceType): Estimated ~\(Int(milesRemaining).formatted()) mi remaining (based on recent driving)"
+            content.body = "\(vehicle.displayName) · \(serviceType): Estimated ~\(Int(milesRemaining).formatted()) mi remaining (based on recent driving)"
         }
         content.sound = .default
 
         let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
-        let id = "service-reminder-miles-\(level)-\(serviceType)"
+        let id = "service-reminder-\(vehicle.id)-miles-\(level)-\(serviceType)"
         let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
 
         center.add(request) { error in

@@ -7,6 +7,7 @@ struct MaintenanceView: View {
     @State private var showAddSheet = false
     @State private var selectedRecord: ServiceRecord?
     @State private var errorMessage: String?
+    @ObservedObject private var vehicleStore = VehicleStore.shared
 
     private let filters = ["All", "Brakes", "Tires", "Engine", "Cooling", "Transmission", "General"]
 
@@ -50,7 +51,9 @@ struct MaintenanceView: View {
                 }
             }
             .sheet(isPresented: $showAddSheet) {
-                AddServiceView { await loadRecords() }
+                if let vehicleId = vehicleStore.viewedVehicleId {
+                    AddServiceView(vehicleId: vehicleId) { await loadRecords() }
+                }
             }
             .sheet(item: $selectedRecord) { record in
                 EditServiceView(record: record) { await loadRecords() }
@@ -70,7 +73,7 @@ struct MaintenanceView: View {
                         }
                 }
             }
-            .task { await loadRecords() }
+            .task(id: vehicleStore.viewedVehicleId) { await loadRecords() }
         }
     }
 
@@ -96,9 +99,10 @@ struct MaintenanceView: View {
     }
 
     private func loadRecords() async {
+        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
         isLoading = true
         do {
-            records = try await NeonRepository.shared.getServiceRecords()
+            records = try await NeonRepository.shared.getServiceRecords(vehicleId: vehicleId)
         } catch {
             errorMessage = error.localizedDescription
         }

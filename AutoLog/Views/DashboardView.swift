@@ -4,6 +4,7 @@ struct DashboardView: View {
     @StateObject private var bleManager = BLEManager.shared
     @StateObject private var mileageService = MileageService.shared
     @StateObject private var syncManager = SyncManager.shared
+    @ObservedObject private var vehicleStore = VehicleStore.shared
 
     @State private var dashboardRows: [DashboardRow] = []
     @State private var trackedItems: [TrackedItem] = []
@@ -69,7 +70,7 @@ struct DashboardView: View {
                     toastView(msg)
                 }
             }
-            .task { await loadDashboard() }
+            .task(id: vehicleStore.viewedVehicleId) { await loadDashboard() }
         }
     }
 
@@ -89,8 +90,13 @@ struct DashboardView: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                Text("\(Int(mileageService.currentMileage).formatted()) mi")
+                Text("\(Int(mileageService.currentMileage(for: vehicleStore.viewedVehicleId)).formatted()) mi")
                     .font(.system(size: 36, weight: .bold, design: .rounded))
+                if let car = vehicleStore.viewedVehicle {
+                    Text(car.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 if let lastSync = mileageService.lastSyncDate {
                     Text("Last BLE sync: \(lastSync.formatted(date: .abbreviated, time: .shortened))")
@@ -129,8 +135,10 @@ struct DashboardView: View {
             }
             if mileageService.needsManualEntry {
                 NavigationLink {
-                    EditMileageView(record: nil) {
+                    // The prompt belongs to the car that triggered it, not the viewed car
+                    EditMileageView(record: nil, vehicleId: mileageService.manualEntryVehicleId ?? vehicleStore.viewedVehicleId) {
                         mileageService.needsManualEntry = false
+                        mileageService.manualEntryVehicleId = nil
                         await loadDashboard()
                     }
                 } label: {
@@ -303,12 +311,13 @@ struct DashboardView: View {
     // MARK: - Data
 
     private func loadDashboard() async {
+        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
         isLoading = true
         do {
-            dashboardRows = try await NeonRepository.shared.getDashboardData()
-            trackedItems = try await NeonRepository.shared.getTrackedItems()
-            if let latest = try await NeonRepository.shared.getLatestMileageRecord() {
-                mileageService.currentMileage = latest.odometerMiles
+            dashboardRows = try await NeonRepository.shared.getDashboardData(vehicleId: vehicleId)
+            trackedItems = try await NeonRepository.shared.getTrackedItems(vehicleId: vehicleId)
+            if let latest = try await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId) {
+                mileageService.setCurrentMileage(latest.odometerMiles, for: vehicleId)
             }
             isOffline = false
         } catch is CancellationError {

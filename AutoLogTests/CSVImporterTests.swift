@@ -32,7 +32,7 @@ final class CSVImporterTests: XCTestCase {
     }
 
     func testMileageRecordCreation() {
-        let record = MileageRecord.imported(odometer: 178000, date: Date())
+        let record = MileageRecord.imported(vehicleId: "v1", odometer: 178000, date: Date())
         XCTAssertEqual(record.source, "IMPORTED")
         XCTAssertEqual(record.odometerMiles, 178000)
         XCTAssertFalse(record.id.isEmpty)
@@ -40,6 +40,7 @@ final class CSVImporterTests: XCTestCase {
 
     func testServiceRecordCreation() {
         let record = ServiceRecord.new(
+            vehicleId: "v1",
             serviceType: "Engine Oil & Filter Change",
             category: "Engine",
             odometer: 175000,

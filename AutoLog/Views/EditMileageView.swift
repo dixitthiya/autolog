@@ -2,6 +2,8 @@ import SwiftUI
 
 struct EditMileageView: View {
     let record: MileageRecord?
+    /// Car a new entry belongs to; an edit keeps the record's own car.
+    let vehicleId: String?
     let onSave: () async -> Void
     @StateObject private var bleManager = BLEManager.shared
 
@@ -15,8 +17,9 @@ struct EditMileageView: View {
     @State private var hasOBDBaseline = false
     @FocusState private var odometerFocused: Bool
 
-    init(record: MileageRecord?, onSave: @escaping () async -> Void) {
+    init(record: MileageRecord?, vehicleId: String?, onSave: @escaping () async -> Void) {
         self.record = record
+        self.vehicleId = record?.vehicleId ?? vehicleId
         self.onSave = onSave
         _date = State(initialValue: record?.timestamp ?? Date())
         _odometerText = State(initialValue: record.map { String(Int($0.odometerMiles)) } ?? "")
@@ -60,7 +63,9 @@ struct EditMileageView: View {
                 if !isEditing {
                     try? await Task.sleep(nanoseconds: 300_000_000)
                     odometerFocused = true
-                    hasOBDBaseline = await getLatestDistSinceCleared() != nil
+                    if let vehicleId {
+                        hasOBDBaseline = await getLatestDistSinceCleared(vehicleId: vehicleId) != nil
+                    }
                 }
             }
             .navigationTitle(isEditing ? "Edit Mileage" : "Add Mileage")
@@ -71,7 +76,7 @@ struct EditMileageView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
-                        .disabled(isSaving || odometerText.isEmpty)
+                        .disabled(isSaving || odometerText.isEmpty || vehicleId == nil)
                 }
             }
             .confirmationDialog("Delete this record?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
@@ -94,12 +99,17 @@ struct EditMileageView: View {
             errorMessage = "Invalid odometer value"
             return
         }
+        guard let vehicleId else {
+            errorMessage = "No vehicle for this entry"
+            return
+        }
         isSaving = true
 
         do {
             if let existing = record {
                 let updated = MileageRecord(
                     id: existing.id,
+                    vehicleId: existing.vehicleId,
                     timestamp: date,
                     odometerMiles: odometer,
                     source: existing.source,
@@ -107,9 +117,9 @@ struct EditMileageView: View {
                 )
                 try await NeonRepository.shared.updateMileageRecord(updated)
             } else {
-                // Capture latest 0131 reading as baseline for this manual entry
-                let latestDist = await getLatestDistSinceCleared()
-                let newRecord = MileageRecord.manual(odometer: odometer, date: date, distSinceCodesCleared: latestDist)
+                // Capture this car's latest 0131 reading as baseline for this manual entry
+                let latestDist = await getLatestDistSinceCleared(vehicleId: vehicleId)
+                let newRecord = MileageRecord.manual(vehicleId: vehicleId, odometer: odometer, date: date, distSinceCodesCleared: latestDist)
                 try await NeonRepository.shared.saveMileageRecord(newRecord)
             }
             await onSave()
@@ -117,19 +127,23 @@ struct EditMileageView: View {
         } catch {
             errorMessage = error.localizedDescription
             if !isEditing {
-                let latestDist = await getLatestDistSinceCleared()
+                let latestDist = await getLatestDistSinceCleared(vehicleId: vehicleId)
                 SyncManager.shared.queueMileageRecord(
-                    MileageRecord.manual(odometer: odometer, date: date, distSinceCodesCleared: latestDist)
+                    MileageRecord.manual(vehicleId: vehicleId, odometer: odometer, date: date, distSinceCodesCleared: latestDist)
                 )
             }
         }
         isSaving = false
     }
 
-    /// Get the latest dist_since_codes_cleared from OBD logs or recent mileage records
-    private func getLatestDistSinceCleared() async -> Double? {
+    /// This car's 0131 baseline: the value read from it in the last few minutes
+    /// if there is one (effectively live), else the latest one logged for it.
+    private func getLatestDistSinceCleared(vehicleId: String) async -> Double? {
+        if let live = MileageService.shared.recentDistSinceCleared(for: vehicleId) {
+            return live
+        }
         do {
-            return try await NeonRepository.shared.getOBDDistSinceCleared()
+            return try await NeonRepository.shared.getOBDDistSinceCleared(vehicleId: vehicleId)
         } catch {
             return nil
         }

@@ -2,6 +2,9 @@ import Foundation
 
 struct ServiceRecord: Codable, Identifiable {
     let id: String
+    /// Optional only so records queued offline before multi-car still decode;
+    /// every new record is created with a car.
+    let vehicleId: String?
     let timestamp: Date
     let serviceType: String
     let category: String
@@ -12,6 +15,7 @@ struct ServiceRecord: Codable, Identifiable {
     var manuallyEdited: Bool
 
     static func new(
+        vehicleId: String,
         serviceType: String,
         category: String,
         odometer: Double,
@@ -22,6 +26,7 @@ struct ServiceRecord: Codable, Identifiable {
     ) -> ServiceRecord {
         ServiceRecord(
             id: UUID().uuidString,
+            vehicleId: vehicleId,
             timestamp: date,
             serviceType: serviceType,
             category: category,
@@ -30,6 +35,24 @@ struct ServiceRecord: Codable, Identifiable {
             amount: amount,
             comments: comments,
             manuallyEdited: false
+        )
+    }
+
+    /// Records queued before multi-car support have no car; they were all the
+    /// Elantra's. Used only when replaying the offline queue.
+    func withLegacyVehicleIfMissing() -> ServiceRecord {
+        guard vehicleId == nil else { return self }
+        return ServiceRecord(
+            id: id,
+            vehicleId: Vehicle.elantraId,
+            timestamp: timestamp,
+            serviceType: serviceType,
+            category: category,
+            odometerMiles: odometerMiles,
+            rotorThicknessMM: rotorThicknessMM,
+            amount: amount,
+            comments: comments,
+            manuallyEdited: manuallyEdited
         )
     }
 }
@@ -163,6 +186,8 @@ struct ServiceThreshold: Codable {
     var daysWarning: Int?
     var rotorCritical: Double?
     var rotorWarning: Double?
+    /// Informational; thresholds are only written by SQL (seed / copy).
+    var vehicleId: String? = nil
 }
 
 extension ServiceThreshold {

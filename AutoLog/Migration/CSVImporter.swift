@@ -144,12 +144,14 @@ class CSVImporter: ObservableObject {
 
             do {
                 if serviceType == "Current Mileage" {
-                    let record = MileageRecord.imported(odometer: odometer, date: date)
+                    // The one-time historical import is the Elantra's history
+                    let record = MileageRecord.imported(vehicleId: Vehicle.elantraId, odometer: odometer, date: date)
                     try await NeonRepository.shared.saveMileageRecord(record)
                 } else {
                     let category = ServiceCategory.category(for: serviceType)
                     let record = ServiceRecord(
                         id: UUID().uuidString,
+                        vehicleId: Vehicle.elantraId,
                         timestamp: date,
                         serviceType: serviceType,
                         category: category,

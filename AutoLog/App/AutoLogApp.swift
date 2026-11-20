@@ -64,6 +64,9 @@ struct AutoLogApp: App {
             Log.db("schema init failed: \(error.localizedDescription)")
         }
 
+        // Load cars so every screen knows which car it is showing
+        await VehicleStore.shared.reload()
+
         // Load service categories from DB
         await ServiceCategory.loadFromDB()
 

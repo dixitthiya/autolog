@@ -10,6 +10,7 @@ struct AnalyticsView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedRotorDate: Date?
+    @ObservedObject private var vehicleStore = VehicleStore.shared
     @State private var selectedSpendMonth: String?
     @State private var spendScrubValue: String?
     @State private var spendTimeFilter: TimeFilter = .threeMonths
@@ -86,7 +87,7 @@ struct AnalyticsView: View {
                     ProgressView()
                 }
             }
-            .task { await loadData() }
+            .task(id: vehicleStore.viewedVehicleId) { await loadData() }
         }
     }
 
@@ -1118,13 +1119,14 @@ struct AnalyticsView: View {
     // MARK: - Data Loading
 
     private func loadData() async {
+        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
         isLoading = true
         do {
-            async let sr = NeonRepository.shared.getServiceRecords()
-            async let mr = NeonRepository.shared.getMileageRecords()
-            async let th = NeonRepository.shared.getThresholds()
-            async let ti = NeonRepository.shared.getActiveTires()
-            async let tr = NeonRepository.shared.getAllTreadReadings()
+            async let sr = NeonRepository.shared.getServiceRecords(vehicleId: vehicleId)
+            async let mr = NeonRepository.shared.getMileageRecords(vehicleId: vehicleId)
+            async let th = NeonRepository.shared.getThresholds(vehicleId: vehicleId)
+            async let ti = NeonRepository.shared.getActiveTires(vehicleId: vehicleId)
+            async let tr = NeonRepository.shared.getAllTreadReadings(vehicleId: vehicleId)
             serviceRecords = try await sr
             mileageRecords = try await mr
             thresholds = try await th

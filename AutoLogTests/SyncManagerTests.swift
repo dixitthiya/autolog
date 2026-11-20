@@ -14,7 +14,7 @@ final class SyncManagerTests: XCTestCase {
     }
 
     func testPendingRecordEncoding() {
-        let record = MileageRecord.manual(odometer: 178000, date: Date())
+        let record = MileageRecord.manual(vehicleId: "v1", odometer: 178000, date: Date())
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
 
@@ -26,11 +26,65 @@ final class SyncManagerTests: XCTestCase {
             XCTAssertNotNil(decoded)
             XCTAssertEqual(decoded?.odometerMiles, 178000)
             XCTAssertEqual(decoded?.source, "MANUAL")
+            XCTAssertEqual(decoded?.vehicleId, "v1")
         }
+    }
+
+    // MARK: - Queue written by a pre-multi-car build
+
+    /// Exactly what an older build stored: no vehicleId, no unassignedReading.
+    private let legacyQueueJSON = """
+    [
+      {"type":"mileage","retryCount":2,
+       "mileageRecord":{"id":"m1","timestamp":700000000,"odometerMiles":186900,"source":"BLE_AUTO","distSinceCodesCleared":4321.5}},
+      {"type":"service","retryCount":0,
+       "serviceRecord":{"id":"s1","timestamp":700000000,"serviceType":"Tire Rotation","category":"Tires",
+                        "odometerMiles":186000,"manuallyEdited":false}}
+    ]
+    """
+
+    func testLegacyQueueStillDecodes() throws {
+        let records = try JSONDecoder().decode([PendingRecord].self, from: Data(legacyQueueJSON.utf8))
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records[0].type, .mileage)
+        XCTAssertEqual(records[0].retryCount, 2)
+        XCTAssertNil(records[0].mileageRecord?.vehicleId)
+        XCTAssertNil(records[0].unassignedReading)
+        XCTAssertEqual(records[1].type, .service)
+        XCTAssertNil(records[1].serviceRecord?.vehicleId)
+    }
+
+    func testLegacyRecordsReplayAsElantra() throws {
+        let records = try JSONDecoder().decode([PendingRecord].self, from: Data(legacyQueueJSON.utf8))
+        let mileage = try XCTUnwrap(records[0].mileageRecord).withLegacyVehicleIfMissing()
+        let service = try XCTUnwrap(records[1].serviceRecord).withLegacyVehicleIfMissing()
+        XCTAssertEqual(mileage.vehicleId, Vehicle.elantraId)
+        XCTAssertEqual(mileage.odometerMiles, 186900)
+        XCTAssertEqual(mileage.distSinceCodesCleared, 4321.5)
+        XCTAssertEqual(service.vehicleId, Vehicle.elantraId)
+        XCTAssertEqual(service.serviceType, "Tire Rotation")
+    }
+
+    func testStampedRecordKeepsItsCarOnReplay() {
+        let record = MileageRecord.bleAuto(vehicleId: "sonata", odometer: 50_000)
+        XCTAssertEqual(record.withLegacyVehicleIfMissing().vehicleId, "sonata")
+    }
+
+    func testUnassignedReadingRoundTrip() throws {
+        let reading = UnassignedReading(id: "u1", timestamp: Date(), failureReason: "vin_timeout",
+                                        peripheralId: "P", captureMode: "bg_auto", rpm: 800,
+                                        distSinceCodesCleared: 1234)
+        let wrapper = PendingRecord(type: .unassigned, mileageRecord: nil, serviceRecord: nil, unassignedReading: reading)
+        let data = try JSONEncoder().encode([wrapper])
+        let decoded = try JSONDecoder().decode([PendingRecord].self, from: data)
+        XCTAssertEqual(decoded.first?.type, .unassigned)
+        XCTAssertEqual(decoded.first?.unassignedReading?.failureReason, "vin_timeout")
+        XCTAssertEqual(decoded.first?.unassignedReading?.distSinceCodesCleared, 1234)
     }
 
     func testServiceRecordEncoding() {
         let record = ServiceRecord.new(
+            vehicleId: "v1",
             serviceType: "Engine Oil & Filter Change",
             category: "Engine",
             odometer: 175000,

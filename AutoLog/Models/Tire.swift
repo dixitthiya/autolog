@@ -21,6 +21,7 @@ enum TirePosition: String, Codable, CaseIterable, Identifiable {
 /// removedOdometer once retired), so it is correct regardless of rotation.
 struct Tire: Codable, Identifiable {
     let id: String
+    let vehicleId: String
     var position: TirePosition?      // current corner; nil once retired
     var makeModel: String?
     var installOdometer: Double
@@ -43,6 +44,7 @@ struct Tire: Codable, Identifiable {
     }
 
     static func new(
+        vehicleId: String,
         position: TirePosition?,
         makeModel: String? = nil,
         installOdometer: Double,
@@ -52,6 +54,7 @@ struct Tire: Codable, Identifiable {
     ) -> Tire {
         Tire(
             id: UUID().uuidString,
+            vehicleId: vehicleId,
             position: position,
             makeModel: makeModel,
             installOdometer: installOdometer,
@@ -69,13 +72,15 @@ struct Tire: Codable, Identifiable {
 /// the tire, so readings form a wear curve across rotations and corners.
 struct TireTreadReading: Codable, Identifiable {
     let id: String
+    let vehicleId: String
     let tireId: String
     let timestamp: Date
     let odometer: Double
     let depth32nds: Double
 
-    static func new(tireId: String, odometer: Double, date: Date = Date(), depth32nds: Double) -> TireTreadReading {
-        TireTreadReading(id: UUID().uuidString, tireId: tireId, timestamp: date, odometer: odometer, depth32nds: depth32nds)
+    /// A reading for `tire`; the car comes from the tire so the two can't disagree.
+    static func new(tire: Tire, odometer: Double, date: Date = Date(), depth32nds: Double) -> TireTreadReading {
+        TireTreadReading(id: UUID().uuidString, vehicleId: tire.vehicleId, tireId: tire.id, timestamp: date, odometer: odometer, depth32nds: depth32nds)
     }
 }
 
@@ -110,13 +115,14 @@ enum TireMove {
 /// An audit record of a rotation: when, at what odometer, and the corner mapping.
 struct TireRotation: Codable, Identifiable {
     let id: String
+    let vehicleId: String
     let timestamp: Date
     let odometer: Double
     let pattern: String
     var comments: String?
 
-    static func new(odometer: Double, date: Date = Date(), pattern: String, comments: String? = nil) -> TireRotation {
-        TireRotation(id: UUID().uuidString, timestamp: date, odometer: odometer, pattern: pattern, comments: comments)
+    static func new(vehicleId: String, odometer: Double, date: Date = Date(), pattern: String, comments: String? = nil) -> TireRotation {
+        TireRotation(id: UUID().uuidString, vehicleId: vehicleId, timestamp: date, odometer: odometer, pattern: pattern, comments: comments)
     }
 }
 

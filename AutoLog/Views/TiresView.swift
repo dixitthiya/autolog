@@ -10,6 +10,7 @@ struct TiresView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedTire: Tire?
+    @ObservedObject private var vehicleStore = VehicleStore.shared
 
     var body: some View {
         NavigationStack {
@@ -37,7 +38,7 @@ struct TiresView: View {
             .overlay(alignment: .bottom) {
                 if let msg = errorMessage { TireToast(message: msg) { errorMessage = nil } }
             }
-            .task { await load() }
+            .task(id: vehicleStore.viewedVehicleId) { await load() }
         }
     }
 
@@ -118,23 +119,24 @@ struct TiresView: View {
     }
 
     private func load() async {
+        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
         isLoading = true
         do {
-            async let tiresTask = NeonRepository.shared.getAllTires()
-            async let mileageTask = NeonRepository.shared.getLatestMileageRecord()
-            async let treadTask = NeonRepository.shared.getLatestTreadReadingsByTire()
+            async let tiresTask = NeonRepository.shared.getAllTires(vehicleId: vehicleId)
+            async let mileageTask = NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId)
+            async let treadTask = NeonRepository.shared.getLatestTreadReadingsByTire(vehicleId: vehicleId)
             let loadedTires = try await tiresTask
             let latest = try await mileageTask
             latestTread = try await treadTask
             tires = loadedTires
-            currentOdometer = latest?.odometerMiles ?? MileageService.shared.currentMileage
+            currentOdometer = latest?.odometerMiles ?? MileageService.shared.currentMileage(for: vehicleId)
         } catch is CancellationError {
             // Pull-to-refresh retracting cancels the in-flight request — not a real error.
         } catch let urlError as URLError where urlError.code == .cancelled {
             // Same: a cancelled URL request, don't surface it.
         } catch {
             errorMessage = error.localizedDescription
-            if currentOdometer == 0 { currentOdometer = MileageService.shared.currentMileage }
+            if currentOdometer == 0 { currentOdometer = MileageService.shared.currentMileage(for: vehicleId) }
         }
         isLoading = false
     }
@@ -397,7 +399,7 @@ struct EditTireView: View {
             try await NeonRepository.shared.updateTireResolvingPosition(updated)
             if let depth = Double(newTreadText), depth > 0 {
                 try await NeonRepository.shared.saveTreadReading(
-                    TireTreadReading.new(tireId: tire.id, odometer: currentOdometer, depth32nds: depth)
+                    TireTreadReading.new(tire: tire, odometer: currentOdometer, depth32nds: depth)
                 )
             }
             await onSave()

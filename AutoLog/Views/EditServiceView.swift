@@ -130,6 +130,7 @@ struct EditServiceView: View {
 
         let updated = ServiceRecord(
             id: record.id,
+            vehicleId: record.vehicleId,
             timestamp: date,
             serviceType: selectedType,
             category: selectedCategory?.name ?? record.category,

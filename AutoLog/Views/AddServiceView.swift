@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct AddServiceView: View {
+    /// The viewed car — services added from the UI go to the car on screen.
+    let vehicleId: String
     let onSave: () async -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -178,10 +180,10 @@ struct AddServiceView: View {
             selectedCategory = first
             selectedType = first.types.first ?? ""
         }
-        if let latest = try? await NeonRepository.shared.getLatestMileageRecord() {
+        if let latest = try? await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId) {
             odometerText = String(Int(latest.odometerMiles))
         }
-        if let active = try? await NeonRepository.shared.getActiveTires() {
+        if let active = try? await NeonRepository.shared.getActiveTires(vehicleId: vehicleId) {
             var byCorner: [TirePosition: Tire] = [:]
             for tire in active {
                 if let pos = tire.position { byCorner[pos] = tire }
@@ -220,6 +222,7 @@ struct AddServiceView: View {
         }
 
         let record = ServiceRecord.new(
+            vehicleId: vehicleId,
             serviceType: finalType,
             category: selectedCategory?.name ?? "General",
             odometer: odometer,
@@ -267,11 +270,12 @@ struct AddServiceView: View {
             for (pos, tire) in activeTiresByCorner {
                 if let depth = Double(rotationTreadText[pos] ?? ""), depth > 0 {
                     try await NeonRepository.shared.saveTreadReading(
-                        TireTreadReading.new(tireId: tire.id, odometer: odometer, date: date, depth32nds: depth)
+                        TireTreadReading.new(tire: tire, odometer: odometer, date: date, depth32nds: depth)
                     )
                 }
             }
             try await NeonRepository.shared.applyRotation(
+                vehicleId: vehicleId,
                 mapping: rotationPattern.mapping,
                 odometer: odometer,
                 date: date,
@@ -283,6 +287,7 @@ struct AddServiceView: View {
             let tread = Double(replacementTreadText)
             for corner in TirePosition.allCases where replacementCorners.contains(corner) {
                 let newTire = try await NeonRepository.shared.replaceTire(
+                    vehicleId: vehicleId,
                     at: corner,
                     makeModel: make.isEmpty ? nil : make,
                     odometer: odometer,
@@ -291,7 +296,7 @@ struct AddServiceView: View {
                 )
                 if let tread = tread, tread > 0 {
                     try await NeonRepository.shared.saveTreadReading(
-                        TireTreadReading.new(tireId: newTire.id, odometer: odometer, date: date, depth32nds: tread)
+                        TireTreadReading.new(tire: newTire, odometer: odometer, date: date, depth32nds: tread)
                     )
                 }
             }

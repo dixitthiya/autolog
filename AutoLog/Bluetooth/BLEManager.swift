@@ -220,6 +220,16 @@ class BLEManager: NSObject, ObservableObject {
         startScanning()
     }
 
+    /// Bluetooth id of the adapter currently connected, for unassigned readings.
+    var connectedPeripheralId: String? { peripheral?.identifier.uuidString }
+
+    /// Drop any partial reply and start a fresh response stream. Used after a
+    /// timed-out command, whose cancelled listener ends the current stream.
+    func resetResponseStream() {
+        dataBuffer = Data()
+        setupDataStream()
+    }
+
     private func clearPeripheralState() {
         peripheral = nil
         writeCharacteristic = nil
@@ -286,7 +296,9 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
-        // No background capture — just clean up restored state
+        // Re-attach to a peripheral iOS restored for us. If it is still connected,
+        // service discovery runs and reaching .ready triggers a normal capture
+        // (onBLEConnected, tagged bg_auto when the app isn't in the foreground).
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
            let restored = peripherals.first {
             Task { @MainActor in
