@@ -20,12 +20,20 @@ struct AddServiceView: View {
     @State private var replacementTreadText = ""
     @State private var activeTiresByCorner: [TirePosition: Tire] = [:]
     @State private var rotationTreadText: [TirePosition: String] = [:]
+    @State private var customTypeName = ""
+
+    /// Sentinel tag for the "add a service not in the list" picker row.
+    private let addNewTag = "__add_new_service__"
 
     private var isRotorType: Bool {
         selectedType.contains("Rotor Thickness")
     }
     private var isTireRotation: Bool { selectedType == "Tire Rotation" }
     private var isTireReplacement: Bool { selectedType == "Tire Replacement" }
+    private var isAddingNew: Bool { selectedType == addNewTag }
+    private var trimmedCustomType: String {
+        customTypeName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         NavigationStack {
@@ -45,6 +53,12 @@ struct AddServiceView: View {
                             ForEach(cat.types, id: \.self) { type in
                                 Text(type).tag(type)
                             }
+                            Text("➕ Add New Service…").tag(addNewTag)
+                        }
+
+                        if isAddingNew {
+                            TextField("New service name", text: $customTypeName)
+                                .textInputAutocapitalization(.words)
                         }
                     }
                 }
@@ -143,7 +157,7 @@ struct AddServiceView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
-                        .disabled(isSaving || selectedType.isEmpty || odometerText.isEmpty || (isTireReplacement && replacementCorners.isEmpty))
+                        .disabled(isSaving || selectedType.isEmpty || odometerText.isEmpty || (isTireReplacement && replacementCorners.isEmpty) || (isAddingNew && trimmedCustomType.isEmpty))
                 }
             }
             .overlay(alignment: .bottom) {
@@ -190,8 +204,23 @@ struct AddServiceView: View {
         }
         isSaving = true
 
+        // Resolve the service type. A brand-new one is saved to the catalog so
+        // it shows up in the picker from now on.
+        var finalType = selectedType
+        if isAddingNew {
+            let name = trimmedCustomType
+            guard !name.isEmpty else {
+                errorMessage = "Enter a service name"
+                isSaving = false
+                return
+            }
+            finalType = name
+            try? await NeonRepository.shared.addServiceType(name, category: selectedCategory?.name ?? "General")
+            await ServiceCategory.loadFromDB()
+        }
+
         let record = ServiceRecord.new(
-            serviceType: selectedType,
+            serviceType: finalType,
             category: selectedCategory?.name ?? "General",
             odometer: odometer,
             date: date,

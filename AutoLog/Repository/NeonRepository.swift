@@ -670,6 +670,16 @@ actor NeonRepository {
 
     // MARK: - Thresholds
 
+    /// Persist a user-entered service type into the catalog so it appears in
+    /// the picker on future launches. No-op if it already exists.
+    func addServiceType(_ serviceType: String, category: String) async throws {
+        try await executeNoResult("""
+            INSERT INTO services (id, service_type, category)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (service_type) DO NOTHING
+        """, params: [UUID().uuidString, serviceType, category])
+    }
+
     func getServiceCategories() async throws -> [ServiceCategory] {
         let rows = try await execute("SELECT service_type, category FROM services ORDER BY category, service_type")
         var catMap: [String: [String]] = [:]
