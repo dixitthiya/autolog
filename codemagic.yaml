@@ -3,6 +3,14 @@ workflows:
     name: iOS Build IPA
     max_build_duration: 30
     instance_type: mac_mini_m2
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+          source: true
+      cancel_previous_builds: true
     environment:
       xcode: 16.2
       cocoapods: default
