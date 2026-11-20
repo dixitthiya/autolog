@@ -40,7 +40,7 @@ struct AutoLogApp: App {
                     mileageService.clearSkipThrottle()
                     bleManager.captureMode = "fg_resume"
                     if bleManager.connectionState == .disconnected {
-                        bleManager.connectOrScan()
+                        bleManager.connectOrScan(trigger: "fg_resume")
                     }
                 }
             }

@@ -2,7 +2,9 @@ import Foundation
 
 enum VINParseResult: Equatable {
     case vin(String)        // valid, uppercased
-    case noData             // adapter/ECU answered with an error (NO DATA, ERROR, ...)
+    case transient          // momentary bus error (CAN ERROR, BUS ERROR, BUS BUSY, STOPPED) — worth a retry
+    case noData             // a clean NO DATA: the ECU answered that it has no VIN to give
+    case error              // other adapter errors (?, UNABLE TO CONNECT, generic ERROR)
     case invalid            // a reply, but not a valid VIN (truncated, bad chars, bad check digit)
 }
 
@@ -19,15 +21,24 @@ extension PIDParser {
     /// Steps: drop the count line, strip the "n:" prefixes, join, skip
     /// 49 02 <item count>, decode ASCII, uppercase, then validate.
     static func parseVIN(_ response: String) -> VINParseResult {
-        let failureMarkers = ["NO DATA", "ERROR", "STOPPED", "UNABLE TO CONNECT", "BUS", "?"]
         var lines = response.uppercased()
             .components(separatedBy: CharacterSet(charactersIn: "\r\n"))
             .map { $0.replacingOccurrences(of: ">", with: "").trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.contains("SEARCHING") }
 
-        if lines.contains(where: { line in failureMarkers.contains { line.contains($0) } }) {
+        // Order matters: "CAN ERROR" also contains "ERROR".
+        if transientBusError(in: response) != nil {
+            Log.obd("VIN read hit a bus error: \(response)")
+            return .transient
+        }
+        if lines.contains(where: { $0.contains("NO DATA") }) {
             Log.obd("VIN not available: \(response)")
             return .noData
+        }
+        let errorMarkers = ["ERROR", "UNABLE TO CONNECT", "BUS", "?"]
+        if lines.contains(where: { line in errorMarkers.contains { line.contains($0) } }) {
+            Log.obd("VIN read error: \(response)")
+            return .error
         }
 
         // Byte-count line ("014"): 1-3 hex digits, no colon, ahead of the frames.

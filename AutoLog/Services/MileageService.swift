@@ -74,36 +74,71 @@ class MileageService: ObservableObject {
         isThrottled = false
     }
 
+    /// How a capture ended. Exactly one is logged per connect as a `capture_end`
+    /// row (outcome in error_message), so no capture can end silently.
+    private struct CaptureOutcome {
+        let name: String            // saved | updated | skipped_<reason> | failed_<reason>
+        let vehicleId: String?
+        var odometer: Double? = nil
+
+        var isSuccess: Bool { name == "saved" || name == "updated" }
+
+        static func saved(_ vehicleId: String, _ odometer: Double) -> CaptureOutcome {
+            CaptureOutcome(name: "saved", vehicleId: vehicleId, odometer: odometer)
+        }
+        static func updated(_ vehicleId: String, _ odometer: Double) -> CaptureOutcome {
+            CaptureOutcome(name: "updated", vehicleId: vehicleId, odometer: odometer)
+        }
+        static func skipped(_ reason: String, _ vehicleId: String?, odometer: Double? = nil) -> CaptureOutcome {
+            CaptureOutcome(name: "skipped_\(reason)", vehicleId: vehicleId, odometer: odometer)
+        }
+        static func failed(_ reason: String, _ vehicleId: String?, odometer: Double? = nil) -> CaptureOutcome {
+            CaptureOutcome(name: "failed_\(reason)", vehicleId: vehicleId, odometer: odometer)
+        }
+    }
+
     /// Quick read: connect, identify the car, read PIDs, save, disconnect (~10 seconds)
     func onBLEConnected(bleManager: BLEManager) async {
-        guard !isReading else { return }
+        let start = Date()
+
+        guard !isReading else {
+            await logCaptureEnd(.skipped("already_reading", nil), bleManager: bleManager, start: start)
+            return
+        }
 
         // Throttle: if engine-off countdown is active, skip — the countdown task will reconnect
         if isThrottled {
             Log.obd("throttled — countdown active, disconnecting")
             bleManager.disconnectAfterRead()
+            await logCaptureEnd(.skipped("throttled", nil), bleManager: bleManager, start: start)
             return
         }
 
         isReading = true
         obdStatus = "Reading data..."
-        defer {
-            isReading = false
-            bleManager.disconnectAfterRead()
-        }
 
-        // Anything connecting while the app isn't in the foreground (iOS reconnect,
-        // state restore, BT power-on) is bg_auto; throttle retries keep their tag.
-        if UIApplication.shared.applicationState != .active && bleManager.captureMode != "throttle_retry" {
+        // Captures while the app is in the background (iOS reconnect, state
+        // restore) are bg_auto; throttle retries keep their tag. A briefly
+        // inactive app (banner, Control Center, locking) keeps its real trigger.
+        if UIApplication.shared.applicationState == .background && bleManager.captureMode != "throttle_retry" {
             bleManager.captureMode = "bg_auto"
         }
-        let captureMode = bleManager.captureMode
 
+        let outcome = await runCapture(bleManager: bleManager, captureMode: bleManager.captureMode)
+
+        isReading = false
+        bleManager.disconnectAfterRead()
+        await logCaptureEnd(outcome, bleManager: bleManager, start: start)
+    }
+
+    /// The capture itself. Every exit returns an outcome, so the compiler
+    /// guarantees each connect is accounted for in obd_connection_logs.
+    private func runCapture(bleManager: BLEManager, captureMode: String) async -> CaptureOutcome {
         // No safe car to save under until the multi-car migration is confirmed.
         guard await NeonRepository.shared.isMultiCarReady else {
             obdStatus = "Database not ready — skipped"
             await logEvent(nil, "schema_not_ready", success: false, error: "multi-car migration not confirmed")
-            return
+            return .skipped("schema_not_ready", nil)
         }
 
         let obd = OBDCommandService(bleManager: bleManager)
@@ -117,7 +152,7 @@ class MileageService: ObservableObject {
         } catch {
             obdStatus = "OBD init failed"
             await logEvent(nil, "init", success: false, error: error.localizedDescription, duration: Self.ms(since: initStart))
-            return
+            return .failed("init", nil)
         }
 
         // Identify the car before anything is read or saved
@@ -129,7 +164,7 @@ class MileageService: ObservableObject {
         case .retired(let v):
             obdStatus = "\(v.displayName) is retired — not logged"
             await logEvent(v.id, "retired_vehicle_connected", success: false, error: "Captures disabled for retired vehicle")
-            return
+            return .skipped("retired_vehicle", v.id)
         case .failed(let reason, let raw):
             vinFailure = (reason, raw)
         }
@@ -137,24 +172,20 @@ class MileageService: ObservableObject {
         let connectedId = connected?.id
 
         do {
-            // Read RPM
+            // Read RPM (one retry on a transient bus error)
             obdStatus = "Reading RPM..."
             var rpm = 0
             var rpmReadSuccess = false
-            let rpmStart = Date()
-            do {
-                let rpmRaw = try await obd.sendCommand("010C")
-                rpm = PIDParser.parseRPM(rpmRaw)
+            let rpmAttempts = await obd.sendRetryingTransient("010C")
+            if let last = rpmAttempts.last, let raw = last.raw, last.transient == nil {
+                rpm = PIDParser.parseRPM(raw)
                 rpmReadSuccess = true
-                await logEvent(connectedId, "rpm_check", pid: "010C", raw: rpmRaw, value: Double(rpm), success: rpm > 0,
-                          error: rpm == 0 ? "RPM=0 (engine off)" : nil, duration: Self.ms(since: rpmStart))
-            } catch {
-                await logEvent(connectedId, "rpm_check", pid: "010C", success: false,
-                          error: error.localizedDescription, duration: Self.ms(since: rpmStart))
             }
+            await logAttempts(rpmAttempts, event: "rpm_check", pid: "010C", vehicleId: connectedId,
+                              value: Double(rpm), success: rpm > 0, message: rpm == 0 ? "RPM=0 (engine off)" : nil)
 
             // Only skip if RPM was successfully read as 0 (confirmed engine off)
-            // If RPM read failed (timeout/junk), continue — fix #3 will catch bad data
+            // If RPM read failed (timeout/junk/bus error), continue — fix #3 will catch bad data
             if rpmReadSuccess && rpm == 0 {
                 obdStatus = "Engine off — retrying in 10s"
                 lastSkipTime = Date()
@@ -163,7 +194,7 @@ class MileageService: ObservableObject {
                           error: "RPM=0, engine confirmed off")
                 // Start real countdown then reconnect
                 startThrottleCountdown(bleManager: bleManager)
-                return
+                return .skipped("engine_off", connectedId)
             }
 
             // Read odometer PID (will likely fail on Hyundais of this era)
@@ -181,31 +212,36 @@ class MileageService: ObservableObject {
                           error: error.localizedDescription, duration: Self.ms(since: odoStart))
             }
 
-            // Read distance since codes cleared (PID 0131)
+            // Read distance since codes cleared (PID 0131), one retry on a transient bus error
             obdStatus = "Reading distance..."
             var distSinceCleared: Double?
-            var distRaw: String?
-            let distStart = Date()
-            do {
-                let raw = try await obd.sendCommand("0131")
-                distRaw = raw
-                let distMiles = PIDParser.parseDistanceSinceCodesCleared(raw)
+            let distAttempts = await obd.sendRetryingTransient("0131")
+            let distRaws = distAttempts.compactMap { $0.raw }
+            let distRaw: String? = distRaws.isEmpty ? nil : distRaws.joined(separator: " | ")
+            var distMiles: Double = 0
+            var distNote: String?
+            if let last = distAttempts.last, let raw = last.raw, last.transient == nil {
+                distMiles = PIDParser.parseDistanceSinceCodesCleared(raw)
+                // A genuine 0 (codes just cleared) is still treated as "no reading";
+                // the log only says which one it was.
                 distSinceCleared = distMiles > 0 ? distMiles : nil
-                await logEvent(connectedId, "dist_since_clear", pid: "0131", raw: raw, value: distMiles, success: distMiles > 0,
-                          error: distMiles == 0 ? "Parse failed or zero" : nil, duration: Self.ms(since: distStart))
-            } catch {
-                await logEvent(connectedId, "dist_since_clear", pid: "0131", success: false,
-                          error: error.localizedDescription, duration: Self.ms(since: distStart))
+                if distMiles == 0 {
+                    distNote = PIDParser.extractBytes(from: raw, expectedPrefix: "41 31").count >= 2
+                        ? "Zero (codes just cleared?) — treated as no reading"
+                        : "Parse failed: \(raw)"
+                }
             }
+            await logAttempts(distAttempts, event: "dist_since_clear", pid: "0131", vehicleId: connectedId,
+                              value: distMiles, success: distSinceCleared != nil, message: distNote)
 
             // Car unknown: keep the reading for later assignment, save nothing else
             guard let vehicle = connected, let vehicleId = connectedId else {
-                await saveUnassigned(
+                let kept = await saveUnassigned(
                     reason: vinFailure?.reason ?? "vin_error", vinRaw: vinFailure?.raw,
                     peripheralId: bleManager.connectedPeripheralId, captureMode: captureMode,
                     rpm: rpmReadSuccess ? rpm : nil, odometer: odometer, odometerRaw: odometerRaw,
                     dist: distSinceCleared, distRaw: distRaw)
-                return
+                return .skipped(kept ? "vehicle_unknown" : "vehicle_unknown_no_data", nil)
             }
 
             if let distSinceCleared {
@@ -223,7 +259,7 @@ class MileageService: ObservableObject {
             guard odometer > 0 else {
                 obdStatus = "Enter odometer manually"
                 requestManualEntry(for: vehicleId)
-                return
+                return .skipped("needs_manual_odometer", vehicleId)
             }
 
             // Sanity check: reject if odometer drops more than 1.5 miles from this car's last known value
@@ -253,7 +289,7 @@ class MileageService: ObservableObject {
                     requestManualEntry(for: vehicleId)
                     await logEvent(vehicleId, "sanity_check_failed", value: retryOdometer, success: false,
                               error: "Odometer dropped after retry: \(Int(retryOdometer)) < last \(Int(lastRecord.odometerMiles))")
-                    return
+                    return .skipped("sanity_check", vehicleId, odometer: retryOdometer)
                 }
                 // Retry succeeded — use the better value
                 odometer = retryOdometer
@@ -263,6 +299,7 @@ class MileageService: ObservableObject {
             // Save or update this car's BLE_AUTO record for today (never overwrite MANUAL entries)
             let todayBLERecord = try await NeonRepository.shared.getTodayBLEAutoRecord(vehicleId: vehicleId)
             let record = MileageRecord.bleAuto(vehicleId: vehicleId, odometer: odometer, distSinceCodesCleared: distSinceCleared)
+            let outcome: CaptureOutcome
 
             if let existing = todayBLERecord {
                 // Update today's BLE_AUTO record with latest reading
@@ -272,23 +309,28 @@ class MileageService: ObservableObject {
                     timestamp: Date(),
                     odometerMiles: odometer,
                     source: "BLE_AUTO",
-                    distSinceCodesCleared: distSinceCleared
+                    // Keep the earlier good 0131 if this capture's read failed
+                    distSinceCodesCleared: distSinceCleared ?? existing.distSinceCodesCleared
                 )
                 do {
                     try await NeonRepository.shared.updateMileageRecord(updated)
                     Log.db("updated today's BLE mileage: \(Int(odometer)) miles")
+                    outcome = .updated(vehicleId, odometer)
                 } catch {
                     Log.db("failed to update: \(error.localizedDescription)")
+                    outcome = .failed("update", vehicleId, odometer: odometer)
                 }
             } else {
                 do {
                     try await NeonRepository.shared.saveMileageRecord(record)
                     Log.db("mileage record saved: \(Int(odometer)) miles")
                     await logEvent(vehicleId, "mileage_save", value: odometer, success: true)
+                    outcome = .saved(vehicleId, odometer)
                 } catch {
                     SyncManager.shared.queueMileageRecord(record)
                     await logEvent(vehicleId, "mileage_save", value: odometer, success: false,
                               error: "Queued: \(error.localizedDescription)")
+                    outcome = .failed("save_queued", vehicleId, odometer: odometer)
                 }
             }
 
@@ -316,11 +358,28 @@ class MileageService: ObservableObject {
             await checkStatusNotifications(vehicle: vehicle)
             await ServiceReminderScheduler.reschedule()
             await SyncManager.shared.syncAll()
+            return outcome
 
         } catch {
             obdStatus = "Read failed"
             await logEvent(connectedId, "connection_error", success: false, error: error.localizedDescription)
+            return .failed("exception", connectedId)
         }
+    }
+
+    /// One `capture_end` row: outcome in error_message, odometer in parsed_value,
+    /// whole-capture duration, and what started the connect in raw_response.
+    private func logCaptureEnd(_ outcome: CaptureOutcome, bleManager: BLEManager, start: Date) async {
+        let appState: String
+        switch UIApplication.shared.applicationState {
+        case .active: appState = "active"
+        case .inactive: appState = "inactive"
+        case .background: appState = "background"
+        @unknown default: appState = "unknown"
+        }
+        let context = "mode=\(bleManager.captureMode);app_state=\(appState);trigger=\(bleManager.connectTriggerDescription)"
+        await logEvent(outcome.vehicleId, "capture_end", raw: context, value: outcome.odometer,
+                       success: outcome.isSuccess, error: outcome.name, duration: Self.ms(since: start))
     }
 
     private func requestManualEntry(for vehicleId: String) {
@@ -347,31 +406,31 @@ class MileageService: ObservableObject {
         cachedVehicle = nil
 
         obdStatus = "Identifying car..."
-        let start = Date()
-        let result = await obd.readVIN()
-        let duration = Self.ms(since: start)
+        let (result, attempts) = await obd.readVIN()
 
         switch result {
         case .failed(let reason, let raw):
-            await logEvent(nil, "vin_read", pid: "0902", raw: raw, success: false, error: reason, duration: duration)
+            await logAttempts(attempts, event: "vin_read", pid: "0902", vehicleId: nil,
+                              value: nil, success: false, message: reason)
             return .failed(reason: reason, raw: raw)
 
         case .vin(let vin, let raw):
             do {
                 if let known = try await NeonRepository.shared.getVehicle(byVIN: vin) {
-                    await logEvent(known.id, "vin_read", pid: "0902", raw: raw, success: true, duration: duration)
+                    await logAttempts(attempts, event: "vin_read", pid: "0902", vehicleId: known.id,
+                                      value: nil, success: true, message: nil)
                     guard known.isActive else { return .retired(known) }
                     cachedVehicle = (known, Date())
                     return .vehicle(known)
                 }
                 let created = try await createVehicle(vin: vin)
-                await logEvent(created.id, "vin_read", pid: "0902", raw: raw, success: true,
-                          error: "new vehicle created", duration: duration)
+                await logAttempts(attempts, event: "vin_read", pid: "0902", vehicleId: created.id,
+                                  value: nil, success: true, message: "new vehicle created")
                 cachedVehicle = (created, Date())
                 return .vehicle(created)
             } catch {
-                await logEvent(nil, "vin_read", pid: "0902", raw: raw, success: false,
-                          error: "lookup failed: \(error.localizedDescription)", duration: duration)
+                await logAttempts(attempts, event: "vin_read", pid: "0902", vehicleId: nil,
+                                  value: nil, success: false, message: "lookup failed: \(error.localizedDescription)")
                 return .failed(reason: "vin_lookup_error", raw: raw)
             }
         }
@@ -389,13 +448,14 @@ class MileageService: ObservableObject {
     }
 
     /// VIN unknown: never guess a car. Keep the reading if there is one.
+    /// Returns whether a reading was kept (saved or queued).
     private func saveUnassigned(reason: String, vinRaw: String?, peripheralId: String?, captureMode: String,
                                 rpm: Int?, odometer: Double, odometerRaw: String?,
-                                dist: Double?, distRaw: String?) async {
+                                dist: Double?, distRaw: String?) async -> Bool {
         guard dist != nil || odometer > 0 else {
             obdStatus = "Couldn't identify car — no reading"
             await logEvent(nil, "unassigned_skipped", success: false, error: "\(reason); no 0131/01A6 data")
-            return
+            return false
         }
         let reading = UnassignedReading(
             id: UUID().uuidString,
@@ -416,6 +476,7 @@ class MileageService: ObservableObject {
         }
         obdStatus = "Couldn't identify car — reading saved for review"
         await logEvent(nil, "unassigned_saved", value: dist, success: false, error: reason)
+        return true
     }
 
     // MARK: - Mileage Calculation
@@ -465,6 +526,31 @@ class MileageService: ObservableObject {
         Int(Date().timeIntervalSince(start) * 1000)
     }
 
+    /// One log row per attempt of a command. Transient bus errors read
+    /// "transient: CAN ERROR"; retried attempts end "— retrying"; with a retry,
+    /// each row carries "(attempt n/m)". The caller's value/success/message
+    /// apply to the final attempt only, and only if it got a usable reply.
+    private func logAttempts(_ attempts: [CommandAttempt], event: String, pid: String, vehicleId: String?,
+                             value: Double?, success: Bool, message: String?) async {
+        for (i, attempt) in attempts.enumerated() {
+            let isLast = i == attempts.count - 1
+            let usable = isLast && attempt.transient == nil && attempt.errorDescription == nil
+            var text: String?
+            if let marker = attempt.transient {
+                text = "transient: \(marker)"
+            } else if let error = attempt.errorDescription {
+                text = error
+            } else if isLast {
+                text = message
+            }
+            if !isLast { text = (text ?? "") + " — retrying" }
+            if attempts.count > 1 { text = (text ?? "ok") + " (attempt \(i + 1)/\(attempts.count))" }
+            await logEvent(vehicleId, event, pid: pid, raw: attempt.raw,
+                           value: usable ? value : nil, success: usable ? success : false,
+                           error: text, duration: attempt.durationMs)
+        }
+    }
+
     private func logEvent(_ vehicleId: String?, _ eventType: String, pid: String? = nil, raw: String? = nil,
                      value: Double? = nil, success: Bool, error: String? = nil, duration: Int? = nil) async {
         await NeonRepository.shared.logOBDEvent(
@@ -489,7 +575,7 @@ class MileageService: ObservableObject {
             obdStatus = "Reconnecting..."
             Log.obd("throttle expired — reconnecting")
             bleManager.captureMode = "throttle_retry"
-            bleManager.connectOrScan()
+            bleManager.connectOrScan(trigger: "throttle")
         }
     }
 

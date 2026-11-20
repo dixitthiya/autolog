@@ -23,12 +23,33 @@ final class VINTests: XCTestCase {
         XCTAssertEqual(PIDParser.parseVIN("NO DATA\r\r>"), .noData)
     }
 
-    func testParseVIN_canError() {
-        XCTAssertEqual(PIDParser.parseVIN("CAN ERROR\r\r>"), .noData)
+    func testParseVIN_canErrorIsTransient() {
+        XCTAssertEqual(PIDParser.parseVIN("CAN ERROR\r\r>"), .transient)
     }
 
-    func testParseVIN_unknownCommand() {
-        XCTAssertEqual(PIDParser.parseVIN("?\r\r>"), .noData)
+    func testParseVIN_otherBusErrorsAreTransient() {
+        XCTAssertEqual(PIDParser.parseVIN("BUS BUSY\r\r>"), .transient)
+        XCTAssertEqual(PIDParser.parseVIN("BUS ERROR\r\r>"), .transient)
+        XCTAssertEqual(PIDParser.parseVIN("STOPPED\r\r>"), .transient)
+    }
+
+    func testParseVIN_transientWinsOverNoData() {
+        XCTAssertEqual(PIDParser.parseVIN("NO DATA\rCAN ERROR\r\r>"), .transient)
+    }
+
+    func testParseVIN_unknownCommandIsError() {
+        XCTAssertEqual(PIDParser.parseVIN("?\r\r>"), .error)
+        XCTAssertEqual(PIDParser.parseVIN("UNABLE TO CONNECT\r\r>"), .error)
+    }
+
+    // MARK: - Transient detection (any PID)
+
+    func testTransientBusErrorDetection() {
+        XCTAssertEqual(PIDParser.transientBusError(in: "CAN ERROR\r\r>"), "CAN ERROR")
+        XCTAssertEqual(PIDParser.transientBusError(in: "bus busy"), "BUS BUSY")
+        XCTAssertNil(PIDParser.transientBusError(in: "NO DATA\r\r>"))
+        XCTAssertNil(PIDParser.transientBusError(in: "41 31 05 C6"))
+        XCTAssertNil(PIDParser.transientBusError(in: "4131413105C6"))
     }
 
     func testParseVIN_truncatedReplyIsInvalid() {

@@ -41,6 +41,15 @@ class BLEManager: NSObject, ObservableObject {
     /// Tracks what triggered the current connection for snapshot categorization
     var captureMode: String = "app_launch"
 
+    /// Bookkeeping only (no effect on connecting): which code path asked for
+    /// the connect that is in flight, and when. Logged on every capture_end.
+    private var pendingTrigger: (name: String, at: Date)?
+    /// Resolved on didConnect / restore: e.g. "loop", "fg_resume", "throttle",
+    /// "restore", "pending" (iOS connected with no request of ours in flight),
+    /// or "pending:loop:age=1840s" (a request iOS completed long after it was made).
+    private(set) var connectTrigger: String?
+    var connectTriggerDescription: String { connectTrigger ?? "unknown" }
+
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var writeCharacteristic: CBCharacteristic?
@@ -118,6 +127,7 @@ class BLEManager: NSObject, ObservableObject {
             if connectionState == .scanning {
                 centralManager.stopScan()
                 connectionState = .disconnected
+                pendingTrigger = nil
                 Log.ble("scan timeout, adapter not found")
             }
         }
@@ -128,6 +138,7 @@ class BLEManager: NSObject, ObservableObject {
         isIntentionalDisconnect = true
         autoScanTask?.cancel()
         autoScanTask = nil
+        pendingTrigger = nil
         if let peripheral = peripheral {
             centralManager.cancelPeripheralConnection(peripheral)
         }
@@ -164,7 +175,7 @@ class BLEManager: NSObject, ObservableObject {
         guard autoModeEnabled else { return }
         Log.ble("auto-scan cycle started (every \(Int(autoScanInterval))s, foreground only)")
         captureMode = "app_launch"
-        connectOrScan()
+        connectOrScan(trigger: "app_launch")
         startAutoScanLoop()
     }
 
@@ -183,7 +194,7 @@ class BLEManager: NSObject, ObservableObject {
                 if self.connectionState == .disconnected {
                     self.captureMode = "fg_timer"
                     Log.ble("auto-scan triggered (fg_timer)")
-                    self.connectOrScan()
+                    self.connectOrScan(trigger: "loop")
                 } else {
                     Log.ble("auto-scan skipped (state: \(self.connectionState.rawValue))")
                 }
@@ -191,8 +202,10 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
 
-    /// Try direct reconnect to saved peripheral first, fall back to scanning
-    func connectOrScan() {
+    /// Try direct reconnect to saved peripheral first, fall back to scanning.
+    /// `trigger` names the caller for capture_end logs only.
+    func connectOrScan(trigger: String) {
+        pendingTrigger = (trigger, Date())
         if let uuidString = UserDefaults.standard.string(forKey: savedPeripheralKey),
            let uuid = UUID(uuidString: uuidString) {
             let knownPeripherals = centralManager.retrievePeripherals(withIdentifiers: [uuid])
@@ -246,6 +259,7 @@ extension BLEManager: CBCentralManagerDelegate {
                 if autoModeEnabled && connectionState == .disconnected {
                     guard UIApplication.shared.applicationState == .active else { return }
                     captureMode = "fg_timer"
+                    pendingTrigger = ("power_on", Date())
                     startScanning()
                 }
             }
@@ -271,6 +285,13 @@ extension BLEManager: CBCentralManagerDelegate {
     nonisolated func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         Task { @MainActor in
             Log.ble("connected to \(peripheral.name ?? "device")")
+            if let pending = pendingTrigger {
+                let age = Int(Date().timeIntervalSince(pending.at))
+                connectTrigger = age <= 30 ? pending.name : "pending:\(pending.name):age=\(age)s"
+            } else {
+                connectTrigger = "pending"
+            }
+            pendingTrigger = nil
             self.peripheral = peripheral
             peripheral.delegate = self
             connectionState = .connected
@@ -292,6 +313,7 @@ extension BLEManager: CBCentralManagerDelegate {
         Task { @MainActor in
             Log.ble("failed to connect: \(error?.localizedDescription ?? "unknown")")
             connectionState = .disconnected
+            pendingTrigger = nil
         }
     }
 
@@ -304,6 +326,8 @@ extension BLEManager: CBCentralManagerDelegate {
             Task { @MainActor in
                 Log.ble("restored peripheral from background (state: \(restored.state.rawValue))")
                 if restored.state == .connected {
+                    connectTrigger = "restore"
+                    pendingTrigger = nil
                     self.peripheral = restored
                     restored.delegate = self
                     connectionState = .connected

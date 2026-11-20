@@ -84,30 +84,80 @@ actor OBDCommandService {
         return PIDParser.parseDistanceSinceCodesCleared(response)
     }
 
+    /// Send a command, retrying once after a transient bus error (CAN ERROR,
+    /// BUS ERROR, BUS BUSY, STOPPED) with a 250 ms pause. With
+    /// `retryOnTimeout`, a timeout is also retried, after the late-reply drain.
+    /// Returns every attempt in order (1 or 2).
+    func sendRetryingTransient(_ command: String, timeout: TimeInterval = Config.obdCommandTimeout,
+                               retryOnTimeout: Bool = false) async -> [CommandAttempt] {
+        var attempts: [CommandAttempt] = []
+        for attemptNumber in 1...2 {
+            let start = Date()
+            do {
+                let raw = try await sendCommand(command, timeout: timeout)
+                let marker = PIDParser.transientBusError(in: raw)
+                attempts.append(CommandAttempt(raw: raw, errorDescription: nil, timedOut: false,
+                                               transient: marker, durationMs: Self.ms(since: start)))
+                if let marker, attemptNumber == 1 {
+                    Log.obd("\(command): transient \(marker) — retrying")
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                } else {
+                    return attempts
+                }
+            } catch OBDError.timeout {
+                attempts.append(CommandAttempt(raw: nil, errorDescription: OBDError.timeout.localizedDescription,
+                                               timedOut: true, transient: nil, durationMs: Self.ms(since: start)))
+                guard retryOnTimeout else { return attempts }
+                // A timed-out read cancels the listener, which ends the shared
+                // response stream, and a reply arriving late would otherwise be
+                // taken as the next command's answer. Let it land, then start a
+                // fresh stream so the following reads still work.
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await MainActor.run { bleManager.resetResponseStream() }
+                guard attemptNumber == 1 else { return attempts }
+            } catch {
+                attempts.append(CommandAttempt(raw: nil, errorDescription: error.localizedDescription,
+                                               timedOut: false, transient: nil, durationMs: Self.ms(since: start)))
+                return attempts
+            }
+        }
+        return attempts
+    }
+
     /// Read the VIN (mode 09 PID 02) to identify which car the adapter is in.
-    func readVIN(timeout: TimeInterval = 2) async -> VINReadResult {
-        let raw: String
-        do {
-            raw = try await sendCommand("0902", timeout: timeout)
-        } catch OBDError.timeout {
-            // A timed-out read cancels the listener, which ends the shared
-            // response stream, and a VIN reply arriving late would otherwise be
-            // taken as the next command's answer. Let it land, then start a
-            // fresh stream so the RPM / 0131 reads still work.
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            await MainActor.run { bleManager.resetResponseStream() }
-            return .failed(reason: "vin_timeout", raw: nil)
-        } catch {
-            Log.obd("VIN read error: \(error.localizedDescription)")
-            return .failed(reason: "vin_error", raw: nil)
+    /// Up to two attempts of `timeout` each; retried on a transient bus error or a timeout.
+    func readVIN(timeout: TimeInterval = 2) async -> (result: VINReadResult, attempts: [CommandAttempt]) {
+        let attempts = await sendRetryingTransient("0902", timeout: timeout, retryOnTimeout: true)
+        let raws = attempts.compactMap { $0.raw }
+        let allRaw: String? = raws.isEmpty ? nil : raws.joined(separator: " | ")
+
+        guard let last = attempts.last else { return (.failed(reason: "vin_error", raw: nil), attempts) }
+        if last.timedOut { return (.failed(reason: "vin_timeout", raw: allRaw), attempts) }
+        guard let raw = last.raw else {
+            Log.obd("VIN read error: \(last.errorDescription ?? "unknown")")
+            return (.failed(reason: "vin_error", raw: allRaw), attempts)
         }
 
         switch PIDParser.parseVIN(raw) {
-        case .vin(let vin): return .vin(vin, raw: raw)
-        case .noData: return .failed(reason: "vin_no_data", raw: raw)
-        case .invalid: return .failed(reason: "vin_invalid", raw: raw)
+        case .vin(let vin): return (.vin(vin, raw: raw), attempts)
+        case .noData: return (.failed(reason: "vin_no_data", raw: allRaw), attempts)
+        case .transient, .error: return (.failed(reason: "vin_error", raw: allRaw), attempts)
+        case .invalid: return (.failed(reason: "vin_invalid", raw: allRaw), attempts)
         }
     }
+
+    private static func ms(since start: Date) -> Int {
+        Int(Date().timeIntervalSince(start) * 1000)
+    }
+}
+
+/// One try of an OBD command, for per-attempt logging.
+struct CommandAttempt {
+    let raw: String?               // nil if the command threw
+    let errorDescription: String?  // set if the command threw (timeout, no response)
+    let timedOut: Bool
+    let transient: String?         // e.g. "CAN ERROR" if the reply was a transient bus error
+    let durationMs: Int
 }
 
 enum VINReadResult {

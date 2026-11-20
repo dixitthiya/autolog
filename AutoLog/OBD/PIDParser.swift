@@ -51,6 +51,15 @@ struct PIDParser {
         return miles
     }
 
+    /// ELM327 replies that mean the CAN bus was momentarily noisy/busy — worth one retry.
+    static let transientMarkers = ["CAN ERROR", "BUS ERROR", "BUS BUSY", "STOPPED"]
+
+    /// The transient bus error in a reply (e.g. "CAN ERROR"), or nil if it isn't one.
+    static func transientBusError(in response: String) -> String? {
+        let upper = response.uppercased()
+        return transientMarkers.first { upper.contains($0) }
+    }
+
     /// Calculate accumulated distance from speed readings
     static func accumulateDistance(speedKPH: Int, deltaTimeHours: Double) -> Double {
         let distanceKM = Double(speedKPH) * deltaTimeHours
