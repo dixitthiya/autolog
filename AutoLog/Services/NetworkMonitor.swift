@@ -45,6 +45,7 @@ final class NetworkMonitor: ObservableObject {
         await VehicleStore.shared.reload()
         await ServiceCategory.loadFromDB()
         await SyncManager.shared.syncAll()
+        await VehicleStore.shared.refreshUnassignedCount()
     }
 
     /// True when `error` means "couldn't reach the database" rather than "the

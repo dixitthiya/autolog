@@ -1,11 +1,17 @@
 import SwiftUI
 
+/// Sheets opened from the car menu.
+enum CarMenuSheet: String, Identifiable {
+    case vehicles, intervals, unassigned
+    var id: String { rawValue }
+}
+
 /// The car picker at the top-left of every tab. Picking a car changes what the
 /// screens show and where entries made in the UI go. It never affects captures,
 /// which always go to the car the adapter is plugged into.
 struct CarSwitcherMenu: View {
     @ObservedObject private var vehicleStore = VehicleStore.shared
-    @Binding var showVehicles: Bool
+    @Binding var sheet: CarMenuSheet?
 
     var body: some View {
         Menu {
@@ -22,8 +28,22 @@ struct CarSwitcherMenu: View {
                 }
             }
             Section {
+                if let car = vehicleStore.viewedVehicle {
+                    Button {
+                        sheet = .intervals
+                    } label: {
+                        Label("Service intervals — \(car.displayName)", systemImage: "gauge.with.dots.needle.33percent")
+                    }
+                }
+                if vehicleStore.unassignedCount > 0 {
+                    Button {
+                        sheet = .unassigned
+                    } label: {
+                        Label("Unassigned (\(vehicleStore.unassignedCount))", systemImage: "questionmark.circle")
+                    }
+                }
                 Button {
-                    showVehicles = true
+                    sheet = .vehicles
                 } label: {
                     Label("Manage vehicles", systemImage: "car.2")
                 }
@@ -59,7 +79,7 @@ struct CarSwitcherMenu: View {
 /// Apply to the content inside each tab's NavigationStack.
 struct CarSwitcherModifier: ViewModifier {
     @ObservedObject private var vehicleStore = VehicleStore.shared
-    @State private var showVehicles = false
+    @State private var sheet: CarMenuSheet?
 
     func body(content: Content) -> some View {
         content
@@ -70,11 +90,20 @@ struct CarSwitcherModifier: ViewModifier {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    CarSwitcherMenu(showVehicles: $showVehicles)
+                    CarSwitcherMenu(sheet: $sheet)
                 }
             }
-            .sheet(isPresented: $showVehicles) {
-                VehiclesView()
+            .sheet(item: $sheet) { which in
+                switch which {
+                case .vehicles:
+                    VehiclesView()
+                case .intervals:
+                    if let vehicleId = vehicleStore.viewedVehicleId {
+                        ServiceIntervalsView(vehicleId: vehicleId)
+                    }
+                case .unassigned:
+                    UnassignedReadingsView()
+                }
             }
     }
 }

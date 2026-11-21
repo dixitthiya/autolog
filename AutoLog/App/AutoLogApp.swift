@@ -56,6 +56,8 @@ struct AutoLogApp: App {
                     if bleManager.connectionState == .disconnected {
                         bleManager.connectOrScan(trigger: "fg_resume")
                     }
+                    // For the "Unassigned (N)" entry in the car menu
+                    await VehicleStore.shared.refreshUnassignedCount()
                 }
             }
         }
@@ -86,6 +88,9 @@ struct AutoLogApp: App {
 
         // Sync pending records
         await syncManager.syncAll()
+
+        // For the "Unassigned (N)" entry in the car menu (after the sync, which may add some)
+        await VehicleStore.shared.refreshUnassignedCount()
 
         // Schedule service reminder notifications
         await ServiceReminderScheduler.reschedule()

@@ -58,7 +58,8 @@ struct MileageHistoryView: View {
             }
             .carSwitcher()
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
-            .task(id: vehicleStore.viewedVehicleId) { await loadRecords() }
+            // Reload when the car changes, or when an assigned reading added a record
+            .task(id: "\(vehicleStore.viewedVehicleId ?? "-")#\(vehicleStore.dataVersion)") { await loadRecords() }
         }
     }
 

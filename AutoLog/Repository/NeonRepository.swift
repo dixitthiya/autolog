@@ -804,6 +804,11 @@ actor NeonRepository {
         }
     }
 
+    func countUnassignedReadings() async throws -> Int {
+        let rows = try await execute("SELECT COUNT(*) AS cnt FROM unassigned_readings WHERE assigned_vehicle_id IS NULL")
+        return parseInt(rows.first?["cnt"]) ?? 0
+    }
+
     func markUnassignedReadingAssigned(id: String, vehicleId: String) async throws {
         try await executeNoResult("""
             UPDATE unassigned_readings SET assigned_vehicle_id = $2, assigned_at = now() WHERE id = $1
@@ -1324,6 +1329,34 @@ actor NeonRepository {
             replacesTireId: parseString(row["replaces_tire_id"]),
             notes: parseString(row["notes"])
         )
+    }
+
+    /// Add or change one car's interval for a service type.
+    func upsertThreshold(_ threshold: ServiceThreshold, vehicleId: String) async throws {
+        try await executeNoResult("""
+            INSERT INTO service_thresholds (vehicle_id, service_type, miles_critical, miles_warning,
+                                            days_critical, days_warning, rotor_critical, rotor_warning)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (vehicle_id, service_type) DO UPDATE SET
+                miles_critical = EXCLUDED.miles_critical,
+                miles_warning  = EXCLUDED.miles_warning,
+                days_critical  = EXCLUDED.days_critical,
+                days_warning   = EXCLUDED.days_warning,
+                rotor_critical = EXCLUDED.rotor_critical,
+                rotor_warning  = EXCLUDED.rotor_warning
+        """, params: [
+            vehicleId, threshold.serviceType,
+            threshold.milesCritical as Any, threshold.milesWarning as Any,
+            threshold.daysCritical as Any, threshold.daysWarning as Any,
+            threshold.rotorCritical as Any, threshold.rotorWarning as Any
+        ])
+    }
+
+    /// Stop tracking a service type for one car. Its service history is untouched.
+    func deleteThreshold(vehicleId: String, serviceType: String) async throws {
+        try await executeNoResult("""
+            DELETE FROM service_thresholds WHERE vehicle_id = $1 AND service_type = $2
+        """, params: [vehicleId, serviceType])
     }
 
     func getThresholds(vehicleId: String) async throws -> [ServiceThreshold] {

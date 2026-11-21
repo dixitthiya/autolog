@@ -95,7 +95,8 @@ struct AnalyticsView: View {
             }
             .carSwitcher()
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
-            .task(id: vehicleStore.viewedVehicleId) { await loadData() }
+            // Reload when the car changes, or when intervals / an assigned reading changed its data
+            .task(id: "\(vehicleStore.viewedVehicleId ?? "-")#\(vehicleStore.dataVersion)") { await loadData() }
         }
     }
 

@@ -3,6 +3,11 @@ import Foundation
 struct StatusCalculator {
     private static let rotorTypes = Set(["Front Rotor Thickness Reading", "Rear Rotor Thickness Reading"])
 
+    /// Rotor services are judged by thickness (rotor limits), not miles or time.
+    static func isRotorType(_ serviceType: String) -> Bool {
+        rotorTypes.contains(serviceType)
+    }
+
     static func calculate(
         serviceType: String,
         threshold: ServiceThreshold,

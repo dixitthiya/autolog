@@ -186,7 +186,8 @@ struct ServiceThreshold: Codable {
     var daysWarning: Int?
     var rotorCritical: Double?
     var rotorWarning: Double?
-    /// Informational; thresholds are only written by SQL (seed / copy).
+    /// Informational; the car is passed separately when a threshold is written
+    /// (seed / copy / the Service Intervals screen).
     var vehicleId: String? = nil
 }
 

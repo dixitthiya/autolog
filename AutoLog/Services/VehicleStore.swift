@@ -19,6 +19,11 @@ final class VehicleStore: ObservableObject {
         didSet { UserDefaults.standard.set(selectedVehicleId, forKey: Self.selectedKey) }
     }
     @Published var connectedVehicle: Vehicle?
+    /// Readings whose car couldn't be identified, still waiting to be assigned.
+    @Published private(set) var unassignedCount = 0
+    /// Bumped when a screen outside a tab changes that tab's data (intervals,
+    /// an assigned reading); tabs that show it reload.
+    @Published private(set) var dataVersion = 0
 
     private init() {
         selectedVehicleId = UserDefaults.standard.string(forKey: Self.selectedKey)
@@ -52,6 +57,18 @@ final class VehicleStore: ObservableObject {
         }
         await reload()
         await ServiceReminderScheduler.reschedule()
+    }
+
+    func dataDidChange() {
+        dataVersion += 1
+    }
+
+    func refreshUnassignedCount() async {
+        do {
+            unassignedCount = try await NeonRepository.shared.countUnassignedReadings()
+        } catch {
+            Log.db("failed to count unassigned readings: \(error.localizedDescription)")
+        }
     }
 
     func reload() async {

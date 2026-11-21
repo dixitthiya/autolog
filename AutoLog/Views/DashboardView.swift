@@ -81,7 +81,8 @@ struct DashboardView: View {
             }
             .carSwitcher()
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
-            .task(id: vehicleStore.viewedVehicleId) { await loadDashboard() }
+            // Reload when the car changes, or when intervals / an assigned reading changed its data
+            .task(id: "\(vehicleStore.viewedVehicleId ?? "-")#\(vehicleStore.dataVersion)") { await loadDashboard() }
         }
     }
 
@@ -383,6 +384,8 @@ struct DashboardView: View {
                 mileageService.setCurrentMileage(latest.odometerMiles, for: vehicleId)
             }
             isOffline = false
+            // Keeps "Unassigned (N)" in the car menu current
+            await vehicleStore.refreshUnassignedCount()
         } catch is CancellationError {
             // Pull-to-refresh retracting cancels the in-flight request — not a real error.
         } catch let urlError as URLError where urlError.code == .cancelled {

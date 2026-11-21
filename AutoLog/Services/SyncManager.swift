@@ -204,78 +204,18 @@ class SyncManager: ObservableObject {
         }
     }
 
-    /// Turn a raw offline reading into a mileage row, using the same math as a
-    /// live capture but the car's history as it was when the reading was taken.
-    /// Returns normally when the capture is done with (saved, superseded, or
-    /// rejected and logged); throws if it should be retried.
+    /// Turn a raw offline reading into a mileage row (ReadingImporter: the same
+    /// math as a live capture, with the car's history as it was when the reading
+    /// was taken). Returns normally when the capture is done with (saved,
+    /// updated, superseded, or rejected and logged); throws if it should be retried.
     private func replayCapture(_ c: PendingCapture) async throws {
-        let repo = NeonRepository.shared
-        let manualRef = try await repo.getLatestManualMileageRecord(vehicleId: c.vehicleId)
-        let latest = try await repo.getLatestMileageRecord(vehicleId: c.vehicleId, onOrBefore: c.timestamp)
-
-        let odometer: Double
-        if let reported = c.odometer, reported > 0 {
-            odometer = reported
-        } else {
-            let estimate = MileageMath.estimate(manualRef: manualRef, latest: latest, currentDist: c.distSinceCodesCleared)
-            guard estimate.basis == .calculated else {
-                let reference = manualRef.map { "manual_ref=\(Int($0.odometerMiles))@\($0.distSinceCodesCleared.map { String($0) } ?? "nil")" } ?? "manual_ref=none"
-                try await reject(c, reason: Self.rejectionReason(estimate.basis), detail: "\(estimate.status); \(reference)")
-                return
+        switch try await ReadingImporter.importCapture(c, saveSnapshot: true) {
+        case .rejected(let reason, let detail):
+            try await reject(c, reason: reason, detail: detail)
+        case .saved(let odometer), .updated(let odometer), .superseded(let odometer):
+            if odometer > MileageService.shared.currentMileage(for: c.vehicleId) {
+                MileageService.shared.setCurrentMileage(odometer, for: c.vehicleId)
             }
-            odometer = estimate.odometer
-        }
-
-        // Same safety net as a live capture (a drop of more than 1.5 mi), judged
-        // against the car's last record at the time of the reading.
-        if let latest, latest.odometerMiles > 0, odometer < latest.odometerMiles - 1.5 {
-            try await reject(c, reason: "sanity_check",
-                             detail: "computed \(Int(odometer)) < last \(Int(latest.odometerMiles)) at capture time")
-            return
-        }
-
-        // One BLE_AUTO row per car per day: update that day's row, else insert.
-        if let existing = try await repo.getBLEAutoRecord(vehicleId: c.vehicleId, onDayOf: c.timestamp) {
-            // A newer reading for that day (taken online since) is left alone.
-            if c.timestamp > existing.timestamp {
-                let updated = MileageRecord(
-                    id: existing.id,
-                    vehicleId: c.vehicleId,
-                    timestamp: c.timestamp,
-                    odometerMiles: odometer,
-                    source: "BLE_AUTO",
-                    distSinceCodesCleared: c.distSinceCodesCleared ?? existing.distSinceCodesCleared
-                )
-                try await repo.updateMileageRecord(updated)
-            }
-        } else {
-            let record = MileageRecord(
-                id: c.id,
-                vehicleId: c.vehicleId,
-                timestamp: c.timestamp,
-                odometerMiles: odometer,
-                source: "BLE_AUTO",
-                distSinceCodesCleared: c.distSinceCodesCleared
-            )
-            try await repo.saveMileageRecord(record)
-        }
-
-        await repo.saveMileageSnapshot(
-            vehicleId: c.vehicleId, odometer: odometer, distSinceCodesCleared: c.distSinceCodesCleared,
-            rpm: c.rpm, captureMode: c.captureMode, timestamp: c.timestamp)
-
-        if odometer > MileageService.shared.currentMileage(for: c.vehicleId) {
-            MileageService.shared.setCurrentMileage(odometer, for: c.vehicleId)
-        }
-    }
-
-    private static func rejectionReason(_ basis: MileageMath.Basis) -> String {
-        switch basis {
-        case .noManualReference: return "no_manual_reference"
-        case .codesCleared: return "negative_delta"
-        case .referenceMissingDist: return "reference_missing_0131"
-        case .noCurrentDistance: return "no_0131_reading"
-        case .calculated: return "calculated"
         }
     }
 

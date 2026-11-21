@@ -98,7 +98,7 @@ Index: `(vehicle_id, service_type, timestamp DESC)`.
 
 ### service_thresholds
 
-Service interval thresholds per car — defines when warnings and critical alerts trigger. The Elantra's rows are seeded on first launch; a new car gets a copy of them when it is created.
+Service interval thresholds per car — defines when warnings and critical alerts trigger. The Elantra's rows are seeded on first launch (and again at launch if the Elantra ever has none); a new car gets a copy of them when it is created. Edited per car on the Service Intervals screen (upsert on `(vehicle_id, service_type)`; delete removes the row only, never service history).
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -171,7 +171,9 @@ Also on the phone: `multiCarMigrationConfirmed` (set once `multi_car_v1` is conf
 
 ### unassigned_readings
 
-Captures whose car could not be identified (VIN read failed). Never guessed into a car and never saved to `mileage_records`; kept here to be assigned later. Only written when the capture produced a 0131 or 01A6 value.
+Captures whose car could not be identified (VIN read failed). Never guessed into a car; kept here to be assigned later on the Unassigned Readings screen. Only written when the capture produced a 0131 or 01A6 value.
+
+**Assigning** (to an active car only): the odometer is worked out with the same rules as an offline-queue replay (`ReadingImporter`: the car's manual reference, its history as of the reading's time, the 1.5 mi sanity check), then written as that car's BLE_AUTO row for the reading's day — inserted with the reading's `id`, or updating that day's row only if the reading is newer; a newer row is left alone. If the odometer can't be worked out, the user types the odometer at that moment and it is saved as a `MANUAL` row (id = the reading's id, timestamp = the reading's, `dist_since_codes_cleared` = the reading's 0131). `assigned_vehicle_id` / `assigned_at` are set only after that save. No snapshot is written for an assigned reading.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
