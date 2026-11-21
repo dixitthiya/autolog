@@ -70,7 +70,7 @@ Index: `(vehicle_id, timestamp DESC)`.
 | `fg_timer` | 2-min auto-scan timer (app in foreground) |
 | `throttle_retry` | 10s retry after engine-off RPM=0 |
 | `dashboard_button` | Capture button on the Dashboard |
-| `bg_auto` | Any capture while the app is in the background (iOS CB reconnect, state restore). A briefly *inactive* app (banner, Control Center, locking) keeps its real trigger |
+| `bg_auto` | Legacy value on old snapshots, and the tag on a `skipped_background` `capture_end`. Captures are foreground-only now, so no new snapshot carries it. A briefly *inactive* app (banner, Control Center) keeps its real trigger |
 
 ---
 
@@ -148,7 +148,7 @@ Index: `(vehicle_id, event_type, timestamp DESC)`.
 
 **Retries.** `0902`, `010C` and `0131` are retried once (after 250 ms) on a transient bus error (`CAN ERROR`, `BUS ERROR`, `BUS BUSY`, `STOPPED`); `0902` also on a timeout. `01A6` is never retried. Each attempt is its own row: a transient attempt's `error_message` is `transient: CAN ERROR`, a retried one ends `— retrying`, and when a retry happened each row ends `(attempt n/2)`.
 
-**`capture_end`** — exactly one per connect. `error_message` is one of: `saved`, `updated`, `skipped_already_reading`, `skipped_throttled`, `skipped_schema_not_ready`, `skipped_retired_vehicle`, `skipped_engine_off`, `skipped_vehicle_unknown` (reading kept in `unassigned_readings`), `skipped_vehicle_unknown_no_data`, `skipped_needs_manual_odometer`, `skipped_sanity_check`, `queued_offline`, `queued_offline_update`, `queued_offline_save` (database unreachable; the raw reading is in the offline queue, see below), `skipped_offline_no_reading`, `failed_init`, `failed_update`, `failed_save_queued`, `failed_exception`. `success` is true only for `saved` / `updated`. `trigger` is what started the connect: `app_launch`, `loop`, `fg_resume`, `throttle`, `dashboard_button`, `power_on`, `restore`, `pending` (iOS connected with no request in flight), or `pending:<trigger>:age=<n>s` (a request iOS completed long after it was made).
+**`capture_end`** — exactly one per connect. `error_message` is one of: `saved`, `updated`, `skipped_already_reading`, `skipped_throttled`, `skipped_background` (a connect arrived while the app was in the background; nothing was read — captures are foreground-only, and only `.background` blocks, only at capture start), `skipped_schema_not_ready`, `skipped_retired_vehicle`, `skipped_engine_off`, `skipped_vehicle_unknown` (reading kept in `unassigned_readings`), `skipped_vehicle_unknown_no_data`, `skipped_needs_manual_odometer`, `skipped_sanity_check`, `queued_offline`, `queued_offline_update`, `queued_offline_save` (database unreachable; the raw reading is in the offline queue, see below), `skipped_offline_no_reading`, `failed_init`, `failed_update`, `failed_save_queued`, `failed_exception`. `success` is true only for `saved` / `updated`. `trigger` is what started the connect: `app_launch`, `loop`, `fg_resume`, `throttle`, `dashboard_button`, `power_on`, `restore`, `pending` (iOS connected with no request in flight), or `pending:<trigger>:age=<n>s` (a request iOS completed long after it was made).
 
 **Offline rows.** While offline only `capture_end` is queued, so these rows can arrive late: their `timestamp` is when the capture ended, not when they were written. Other per-command rows (`init`, `vin_read`, `rpm_check`, …) are not written for an offline capture.
 

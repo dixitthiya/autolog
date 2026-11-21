@@ -34,6 +34,12 @@ struct AutoLogApp: App {
                     }
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                // No background captures: don't leave a connect pending for iOS to complete later
+                Task { @MainActor in
+                    bleManager.cancelPendingConnectionForBackground()
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 Task {
                     // If the migration was never confirmed (a launch with no

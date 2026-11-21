@@ -128,9 +128,10 @@ class MileageService: ObservableObject {
         obdStatus = "Reading data..."
         captureOffline = !NetworkMonitor.shared.isOnline
 
-        // Captures while the app is in the background (iOS reconnect, state
-        // restore) are bg_auto; throttle retries keep their tag. A briefly
-        // inactive app (banner, Control Center, locking) keeps its real trigger.
+        // A connect that arrives while the app is in the background (iOS reconnect,
+        // state restore) is tagged bg_auto; runCapture then skips it. Throttle
+        // retries keep their tag. A briefly inactive app (banner, Control Center)
+        // keeps its real trigger.
         if UIApplication.shared.applicationState == .background && bleManager.captureMode != "throttle_retry" {
             bleManager.captureMode = "bg_auto"
         }
@@ -146,6 +147,16 @@ class MileageService: ObservableObject {
     /// The capture itself. Every exit returns an outcome, so the compiler
     /// guarantees each connect is accounted for in obd_connection_logs.
     private func runCapture(bleManager: BLEManager, captureMode: String) async -> CaptureOutcome {
+        // Captures only happen with the app in use. One that starts in the
+        // background is skipped before any command is sent (onBLEConnected then
+        // disconnects). Only .background blocks: a banner or Control Center makes
+        // the app .inactive and must not stop a capture, and this is checked once,
+        // so a capture already running is never cut short.
+        if UIApplication.shared.applicationState == .background {
+            obdStatus = "Skipped — app in background"
+            return .skipped("background", nil)
+        }
+
         // No safe car to save under until the multi-car migration is confirmed.
         // The confirmation is remembered across launches, so this holds offline;
         // if it was never confirmed, try again now rather than waiting for a relaunch.

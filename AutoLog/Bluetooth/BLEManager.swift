@@ -233,6 +233,21 @@ class BLEManager: NSObject, ObservableObject {
         startScanning()
     }
 
+    /// The app is going to the background: drop a connect or scan that is still
+    /// waiting, so iOS can't complete it later and wake the app for a capture.
+    /// A connection that is up (a capture in progress) is left to finish.
+    func cancelPendingConnectionForBackground() {
+        guard connectionState == .connecting || connectionState == .scanning else { return }
+        Log.ble("app backgrounded — cancelling pending connect")
+        centralManager.stopScan()
+        if let peripheral = peripheral {
+            centralManager.cancelPeripheralConnection(peripheral)
+        }
+        pendingTrigger = nil
+        connectionState = .disconnected
+        clearPeripheralState()
+    }
+
     /// Bluetooth id of the adapter currently connected, for unassigned readings.
     var connectedPeripheralId: String? { peripheral?.identifier.uuidString }
 
@@ -319,8 +334,9 @@ extension BLEManager: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         // Re-attach to a peripheral iOS restored for us. If it is still connected,
-        // service discovery runs and reaching .ready triggers a normal capture
-        // (onBLEConnected, tagged bg_auto when the app isn't in the foreground).
+        // service discovery runs and reaching .ready calls onBLEConnected. Captures
+        // are foreground-only: when the app is in the background, MileageService
+        // skips it (skipped_background) and disconnects without reading anything.
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
            let restored = peripherals.first {
             Task { @MainActor in
