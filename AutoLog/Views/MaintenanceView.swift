@@ -11,7 +11,10 @@ struct MaintenanceView: View {
     @State private var loadedVehicleId: String?
     @ObservedObject private var vehicleStore = VehicleStore.shared
 
-    private let filters = ["All", "Brakes", "Tires", "Engine", "Cooling", "Transmission", "General"]
+    /// "All" first, then the real categories from the service catalog.
+    private var filters: [String] {
+        ["All"] + ServiceCategory.all.map(\.name)
+    }
 
     var filteredRecords: [ServiceRecord] {
         if selectedFilter == "All" { return records }
@@ -33,6 +36,8 @@ struct MaintenanceView: View {
                                 .onTapGesture { selectedRecord = record }
                         }
                     }
+                    .carSwitcherListContainer()
+                    .refreshable { await loadRecords() }
                     .overlay {
                         if vehicleStore.viewedVehicleId == nil {
                             NoCarSelectedView()
@@ -55,13 +60,13 @@ struct MaintenanceView: View {
                     // Opens Service intervals through the shared car-menu sheet
                     Button { vehicleStore.carMenuSheet = .intervals } label: {
                         Image(systemName: "slider.horizontal.3")
-                            .font(.title3)
                     }
+                    .accessibilityLabel("Service intervals")
                     .disabled(vehicleStore.viewedVehicleId == nil)
                     Button { showAddSheet = true } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
+                        Image(systemName: "plus")
                     }
+                    .accessibilityLabel("Add service")
                     .disabled(vehicleStore.viewedVehicleId == nil)
                 }
             }
@@ -73,21 +78,7 @@ struct MaintenanceView: View {
             .sheet(item: $selectedRecord) { record in
                 EditServiceView(record: record) { await loadRecords() }
             }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage {
-                    Text(msg)
-                        .font(.caption).foregroundStyle(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(.red.opacity(0.9)).clipShape(Capsule())
-                        .padding(.bottom, 8)
-                        .onAppear {
-                            Task {
-                                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                                errorMessage = nil
-                            }
-                        }
-                }
-            }
+            .errorToast($errorMessage)
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await loadRecords() }
         }
@@ -109,7 +100,8 @@ struct MaintenanceView: View {
                 }
             }
             .padding(.horizontal, CarSwitcherLayout.titleLeading)
-            .padding(.vertical, 8)
+            .padding(.top, 8)
+            .padding(.bottom, CarSwitcherLayout.bottom)
         }
     }
 
@@ -133,7 +125,7 @@ struct MaintenanceView: View {
             records = loaded
         } catch {
             guard vehicleId == vehicleStore.viewedVehicleId else { return }
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
         isLoading = false
     }
@@ -162,12 +154,12 @@ struct ServiceRowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Label("\(Int(record.odometerMiles).formatted()) mi", systemImage: "speedometer")
+                Label(Fmt.miles(record.odometerMiles), systemImage: "speedometer")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 if let amount = record.amount {
-                    Label("$\(amount, specifier: "%.2f")", systemImage: "dollarsign.circle")
+                    Label(Fmt.money(amount), systemImage: "dollarsign.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -182,7 +174,7 @@ struct ServiceRowView: View {
             if let comments = record.comments, !comments.isEmpty {
                 Text(comments)
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }

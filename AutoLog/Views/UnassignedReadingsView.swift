@@ -59,21 +59,7 @@ struct UnassignedReadingsView: View {
             } message: { reading in
                 Text("The reading from \(reading.timestamp.formatted(date: .abbreviated, time: .shortened)) is removed for good. No car's mileage changes.")
             }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage {
-                    Text(msg)
-                        .font(.caption).foregroundStyle(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(.red.opacity(0.9)).clipShape(Capsule())
-                        .padding(.bottom, 8)
-                        .onAppear {
-                            Task {
-                                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                                errorMessage = nil
-                            }
-                        }
-                }
-            }
+            .errorToast($errorMessage)
             .task { await load() }
         }
     }
@@ -83,7 +69,7 @@ struct UnassignedReadingsView: View {
         do {
             readings = try await NeonRepository.shared.getUnassignedReadings()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
         isLoading = false
         await vehicleStore.refreshUnassignedCount()
@@ -94,7 +80,7 @@ struct UnassignedReadingsView: View {
             try await NeonRepository.shared.deleteUnassignedReading(id: reading.id)
             await load()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
     }
 }
@@ -107,8 +93,7 @@ private struct UnassignedReadingRowView: View {
             Text(reading.timestamp.formatted(date: .abbreviated, time: .shortened))
                 .font(.subheadline.bold())
             HStack(spacing: 12) {
-                Text("0131: \(UnassignedReading.milesText(reading.distSinceCodesCleared))")
-                Text("RPM: \(reading.rpm.map(String.init) ?? "–")")
+                Text("Distance since codes cleared: \(UnassignedReading.milesText(reading.distSinceCodesCleared))")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -129,12 +114,12 @@ extension UnassignedReading {
     /// Why the car wasn't identified, in plain words.
     static func reasonText(_ reason: String) -> String {
         switch reason {
-        case "vin_timeout": return "Car didn't answer the VIN request"
-        case "vin_no_data": return "Car didn't provide a VIN"
-        case "vin_error": return "Adapter or bus error reading the VIN"
-        case "vin_invalid": return "VIN reply was unreadable"
-        case "vin_lookup_error": return "VIN read, but the car lookup failed"
-        case "vin_unknown_offline": return "Offline, and the VIN wasn't a known car"
+        case "vin_timeout": return "Car didn't answer the vehicle ID request"
+        case "vin_no_data": return "Car didn't provide a vehicle ID"
+        case "vin_error": return "Adapter error while reading the vehicle ID"
+        case "vin_invalid": return "Vehicle ID reply was unreadable"
+        case "vin_lookup_error": return "Vehicle ID read, but the car lookup failed"
+        case "vin_unknown_offline": return "Offline, and the vehicle ID wasn't a known car"
         default: return reason
         }
     }
@@ -180,9 +165,7 @@ struct AssignReadingView: View {
         Form {
             Section("Reading") {
                 LabeledContent("Taken", value: readingTime)
-                LabeledContent("0131", value: UnassignedReading.milesText(reading.distSinceCodesCleared))
-                LabeledContent("RPM", value: reading.rpm.map(String.init) ?? "–")
-                LabeledContent("Capture", value: reading.captureMode ?? "–")
+                LabeledContent("Distance since codes cleared", value: UnassignedReading.milesText(reading.distSinceCodesCleared))
                 Text(UnassignedReading.reasonText(reading.failureReason))
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -198,7 +181,7 @@ struct AssignReadingView: View {
             } header: {
                 Text("Assign to")
             } footer: {
-                Text("Only active cars. The 0131 value only makes sense for the car it came from — pick the car that was running at that time.")
+                Text("Only active cars. The distance reading only makes sense for the car it came from — pick the car that was running at that time.")
             }
 
             if selectedVehicleId != nil {
@@ -219,21 +202,14 @@ struct AssignReadingView: View {
             }
         }
         .navigationTitle("Assign Reading")
+        .keyboardDoneButton()
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog("Assign to \(selectedCar?.displayName ?? "this car")?", isPresented: $showConfirm, titleVisibility: .visible) {
             Button("Assign") { Task { await assign() } }
         } message: {
             Text(confirmMessage)
         }
-        .overlay(alignment: .bottom) {
-            if let msg = errorMessage {
-                Text(msg)
-                    .font(.caption).foregroundStyle(.white)
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(.red.opacity(0.9)).clipShape(Capsule())
-                    .padding(.bottom, 8)
-            }
-        }
+        .errorToast($errorMessage)
         .task {
             if selectedVehicleId == nil {
                 selectedVehicleId = suggestedVehicleId()
@@ -266,7 +242,7 @@ struct AssignReadingView: View {
                             .multilineTextAlignment(.trailing)
                             .frame(maxWidth: 110)
                     }
-                    Text("Saved as a manual entry at the reading's time, with this reading's 0131 (\(UnassignedReading.milesText(reading.distSinceCodesCleared))) as the baseline for later captures.")
+                    Text("Saved as a manual entry at the reading's time, with this reading's distance reading (\(UnassignedReading.milesText(reading.distSinceCodesCleared))) as the baseline for later captures.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 case .failed(let message):
@@ -301,13 +277,13 @@ struct AssignReadingView: View {
         case .computed(let odometer, let effect):
             switch effect {
             case .insert, .update:
-                return "Saves \(Int(odometer).formatted()) mi for \(car) on \(readingDay) as that day's BLE reading."
+                return "Saves \(Int(odometer).formatted()) mi for \(car) on \(readingDay) as that day's automatic reading."
             case .keepNewer:
                 return "Nothing is saved: \(car) already has a newer reading for \(readingDay). The reading is marked as assigned."
             }
         case .needsOdometer:
             let miles = manualOdometer.map { Int($0).formatted() } ?? "?"
-            return "Saves \(miles) mi as a manual entry for \(car) at \(readingTime), with this reading's 0131 as the baseline."
+            return "Saves \(miles) mi as a manual entry for \(car) at \(readingTime), with this reading's distance reading as the baseline."
         case .failed:
             return ""
         }
@@ -316,9 +292,9 @@ struct AssignReadingView: View {
     private func effectText(_ effect: ReadingImporter.DayRowEffect) -> String {
         switch effect {
         case .insert:
-            return "Adds this car's BLE reading for \(readingDay)."
+            return "Adds this car's automatic reading for \(readingDay)."
         case .update(let existing):
-            return "Replaces this car's \(readingDay) BLE reading (\(Int(existing.odometerMiles).formatted()) mi at \(existing.timestamp.formatted(date: .omitted, time: .shortened))), which is older."
+            return "Replaces this car's \(readingDay) automatic reading (\(Int(existing.odometerMiles).formatted()) mi at \(existing.timestamp.formatted(date: .omitted, time: .shortened))), which is older."
         case .keepNewer(let existing):
             return "This car already has a newer \(readingDay) reading (\(Int(existing.odometerMiles).formatted()) mi at \(existing.timestamp.formatted(date: .omitted, time: .shortened))). Nothing changes; the reading is marked as assigned."
         }
@@ -329,13 +305,13 @@ struct AssignReadingView: View {
         case "no_manual_reference":
             return "This car has no manual odometer entry yet, so the reading can't be converted. Enter what the odometer showed at that moment."
         case "reference_missing_0131":
-            return "This car's latest manual odometer entry has no OBD baseline, so the reading can't be converted. Enter what the odometer showed at that moment."
+            return "This car's latest manual odometer entry has no baseline reading, so the reading can't be converted. Enter what the odometer showed at that moment."
         case "negative_delta":
-            return "The reading's 0131 is below the one at this car's latest manual entry (that entry is newer than the reading, or the codes were cleared). Enter what the odometer showed at that moment."
+            return "The reading's distance value is below the one at this car's latest manual entry (that entry is newer than the reading, or the codes were cleared). Enter what the odometer showed at that moment."
         case "sanity_check":
             return "The worked-out odometer is lower than a reading this car already had before then — the reading may belong to another car. Only continue if you know the odometer at that moment."
         case "no_0131_reading":
-            return "The reading has no 0131 value to work from. Enter what the odometer showed at that moment."
+            return "The reading has no distance value to work from. Enter what the odometer showed at that moment."
         default:
             return "The reading can't be converted (\(reason)). Enter what the odometer showed at that moment."
         }
@@ -387,7 +363,7 @@ struct AssignReadingView: View {
                 result = .computed(odometer: odometer, effect: effect)
             }
         } catch {
-            result = .failed(error.localizedDescription)
+            result = .failed(error.userMessage)
         }
         // A different car was picked while this was working.
         guard vehicleId == selectedVehicleId else { return }
@@ -449,7 +425,7 @@ struct AssignReadingView: View {
             await onDone()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
     }
 }

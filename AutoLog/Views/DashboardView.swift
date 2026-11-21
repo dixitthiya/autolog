@@ -28,6 +28,9 @@ struct DashboardView: View {
                             CarSwitcherHeader(leadingInset: 0)
                         }
                         .carSwitcherListHeader()
+                        if isOffline {
+                            offlineSection
+                        }
                         if vehicleStore.viewedVehicleId == nil {
                             Section { NoCarSelectedView() }
                         } else {
@@ -77,16 +80,7 @@ struct DashboardView: View {
                 }
             }
             .navigationTitle("AutoLog")
-            .overlay(alignment: .top) {
-                if isOffline {
-                    offlineBanner
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage {
-                    toastView(msg)
-                }
-            }
+            .errorToast($errorMessage)
             .sheet(item: $intervalTarget) { target in
                 if let vehicleId = vehicleStore.viewedVehicleId {
                     IntervalEditSheet(vehicleId: vehicleId, serviceType: target.serviceType)
@@ -114,10 +108,16 @@ struct DashboardView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-                Text("\(Int(mileageService.currentMileage(for: vehicleStore.viewedVehicleId)).formatted()) mi")
+                let odometer = mileageService.currentMileage(for: vehicleStore.viewedVehicleId)
+                Text(Fmt.milesOrDash(odometer))
                     .font(.system(size: 36, weight: .bold, design: .rounded))
-                if let car = vehicleStore.viewedVehicle {
-                    Text(car.displayName)
+                if odometer <= 0 {
+                    Text("Enter odometer to start tracking")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if isViewedCarRetired {
+                    Text("Retired — as of last reading")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -159,7 +159,7 @@ struct DashboardView: View {
                             .foregroundStyle(.green)
                     }
                     if let lastSync = mileageService.lastSyncDate {
-                        Text("Last BLE sync: \(lastSync.formatted(date: .abbreviated, time: .shortened))")
+                        Text("Last sync from car: \(Fmt.dateTime(lastSync))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -184,21 +184,20 @@ struct DashboardView: View {
                         .foregroundStyle(.orange)
                 }
             }
-        } header: {
-            HStack {
-                Label(connectedCarTitle, systemImage: "antenna.radiowaves.left.and.right")
-                    .lineLimit(1)
-                Spacer()
-                Button {
-                    guard !mileageService.isReading else { return }
-                    bleManager.captureMode = "dashboard_button"
-                    bleManager.connectOrScan(trigger: "dashboard_button")
-                } label: {
-                    Label("Capture", systemImage: "arrow.clockwise")
-                        .font(.caption2.bold())
-                }
-                .disabled(mileageService.isReading)
+            Button {
+                guard !mileageService.isReading else { return }
+                bleManager.captureMode = "dashboard_button"
+                bleManager.connectOrScan(trigger: "dashboard_button")
+            } label: {
+                Label("Read from car now", systemImage: "arrow.clockwise")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
             }
+            .disabled(mileageService.isReading)
+            .accessibilityLabel("Read from car now")
+        } header: {
+            Label(connectedCarTitle, systemImage: "antenna.radiowaves.left.and.right")
+                .lineLimit(1)
         } footer: {
             Text(captureFooter)
         }
@@ -206,19 +205,25 @@ struct DashboardView: View {
 
     /// The adapter's car, which is where captures go — not necessarily the car on screen.
     private var connectedCarTitle: String {
-        guard let car = vehicleStore.connectedVehicle else { return "Connected: no car identified yet" }
-        return bleManager.connectionState == .disconnected
-            ? "Last connected: \(car.displayName)"
-            : "Connected: \(car.displayName)"
+        switch bleManager.connectionState {
+        case .disconnected:
+            if let car = vehicleStore.connectedVehicle { return "Last connected: \(car.displayName)" }
+            return "Adapter not connected"
+        case .scanning, .connecting:
+            return "Connecting…"
+        case .connected, .ready:
+            if let car = vehicleStore.connectedVehicle { return "Connected: \(car.displayName)" }
+            return "Connected"
+        }
     }
 
     private var captureFooter: String {
         if let connected = vehicleStore.connectedVehicle,
            let viewed = vehicleStore.viewedVehicle,
            connected.id != viewed.id {
-            return "Captures go to \(connected.displayName), the car the adapter is plugged into — not \(viewed.displayName), the car shown here."
+            return "Readings go to \(connected.displayName), the car the adapter is plugged into — not \(viewed.displayName), the car shown here."
         }
-        return "Captures always go to the car the adapter is plugged into, identified by its VIN."
+        return "Readings go to the car the adapter is plugged into."
     }
 
     private var manualEntryPromptTitle: String {
@@ -229,17 +234,17 @@ struct DashboardView: View {
     }
 
     private var bleStatusText: String {
-        // During throttle countdown, suppress BLE state flickering
+        // During throttle countdown, suppress status flickering
         if mileageService.isThrottled {
             return "Auto-capture active"
         }
         switch bleManager.connectionState {
         case .disconnected:
-            return mileageService.lastCaptureInfo.isEmpty ? "Waiting for OBD adapter" : "Auto-capture active"
-        case .scanning: return "Scanning..."
-        case .connecting: return "Connecting..."
+            return mileageService.lastCaptureInfo.isEmpty ? "Waiting for the adapter" : "Auto-capture active"
+        case .scanning: return "Looking for adapter…"
+        case .connecting: return "Connecting…"
         case .connected: return "Connected"
-        case .ready: return "Reading data..."
+        case .ready: return "Reading from the car…"
         }
     }
 
@@ -249,10 +254,14 @@ struct DashboardView: View {
         return bleManager.connectionState == .disconnected ? .secondary : .blue
     }
 
+    private var isViewedCarRetired: Bool {
+        vehicleStore.viewedVehicle.map { !$0.isActive } ?? false
+    }
+
     private var attentionSection: some View {
         Section(header: Text("Needs Attention")) {
             ForEach(attentionRows) { row in
-                DashboardRowView(row: row)
+                DashboardRowView(row: row, neutral: false)
                     .contextMenu { serviceRowMenu(row.serviceType) }
             }
         }
@@ -277,7 +286,7 @@ struct DashboardView: View {
         ForEach(nonUrgentByCategory, id: \.0) { category, rows in
             Section(header: Text(category)) {
                 ForEach(rows) { row in
-                    DashboardRowView(row: row)
+                    DashboardRowView(row: row, neutral: isViewedCarRetired)
                         .contextMenu { serviceRowMenu(row.serviceType) }
                 }
             }
@@ -320,6 +329,7 @@ struct DashboardView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
         .id("trackedSearchField")
@@ -335,7 +345,10 @@ struct DashboardView: View {
     }
 
     private var attentionRows: [DashboardRow] {
-        dashboardRows
+        // A retired car has nothing to act on, so it has no "Needs Attention" list
+        // (its rows show in their categories, in neutral grey).
+        if isViewedCarRetired { return [] }
+        return dashboardRows
             .filter { $0.status == .critical || $0.status == .serviceSoon }
             .sorted { a, b in
                 if a.status != b.status { return a.status < b.status }
@@ -348,7 +361,7 @@ struct DashboardView: View {
 
     private var nonUrgentByCategory: [(String, [DashboardRow])] {
         var catMap: [String: [DashboardRow]] = [:]
-        for row in dashboardRows where row.status != .critical && row.status != .serviceSoon {
+        for row in dashboardRows where isViewedCarRetired || (row.status != .critical && row.status != .serviceSoon) {
             let cat = ServiceCategory.category(for: row.serviceType)
             catMap[cat, default: []].append(row)
         }
@@ -362,32 +375,13 @@ struct DashboardView: View {
             .sorted { $0.0 < $1.0 }
     }
 
-    private var offlineBanner: some View {
-        Text("Offline - showing cached data")
-            .font(.caption)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-            .background(.orange)
-            .clipShape(Capsule())
-            .padding(.top, 4)
-    }
-
-    private func toastView(_ message: String) -> some View {
-        Text(message)
-            .font(.caption)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(.red.opacity(0.9))
-            .clipShape(Capsule())
-            .padding(.bottom, 8)
-            .onAppear {
-                Task {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    errorMessage = nil
-                }
-            }
+    /// A normal row below the car picker; only for real network problems.
+    private var offlineSection: some View {
+        Section {
+            Label("Can't reach the database — changes will sync later", systemImage: "wifi.slash")
+                .font(.subheadline)
+                .foregroundStyle(.orange)
+        }
     }
 
     // MARK: - Data
@@ -427,8 +421,11 @@ struct DashboardView: View {
             // Same: a cancelled URL request, don't flip offline or toast.
         } catch {
             guard vehicleId == vehicleStore.viewedVehicleId else { return }
-            isOffline = true
-            errorMessage = error.localizedDescription
+            if NetworkMonitor.isOfflineError(error) {
+                isOffline = true
+            } else {
+                errorMessage = error.userMessage
+            }
         }
         isLoading = false
     }
@@ -447,12 +444,12 @@ struct TrackedItemRowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Label("\(Int(item.lastServiceMileage).formatted()) mi", systemImage: "wrench.and.screwdriver")
+                Label(Fmt.miles(item.lastServiceMileage), systemImage: "wrench.and.screwdriver")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 if let amount = item.amount {
-                    Label("$\(amount, specifier: "%.2f")", systemImage: "dollarsign.circle")
+                    Label(Fmt.money(amount), systemImage: "dollarsign.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -496,6 +493,10 @@ struct TrackedItemRowView: View {
 
 struct DashboardRowView: View {
     let row: DashboardRow
+    /// Retired car: grey statuses instead of red/orange alarm colours.
+    var neutral = false
+
+    private var statusColor: Color { neutral ? .secondary : row.status.color }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -503,16 +504,23 @@ struct DashboardRowView: View {
                 Text(row.serviceType)
                     .font(.subheadline.bold())
                 Spacer()
-                statusBadge
+                if row.status != .noData {
+                    statusBadge
+                }
             }
 
+            if row.status == .noData && row.rotorThickness == nil {
+                Label("No service logged", systemImage: "tray")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
             HStack(spacing: 16) {
                 if row.rotorThickness != nil {
                     Label("\(row.rotorThickness!, specifier: "%.1f") mm", systemImage: "ruler")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    Label("\(Int(row.milesAfterService).formatted()) mi", systemImage: "speedometer")
+                    Label(Fmt.miles(row.milesAfterService), systemImage: "speedometer")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -540,7 +548,7 @@ struct DashboardRowView: View {
                     if !parts.isEmpty {
                         Label("\(parts) remaining", systemImage: "arrow.forward.circle")
                             .font(.caption)
-                            .foregroundStyle(row.status.color)
+                            .foregroundStyle(statusColor)
                     }
                 case .serviceSoon:
                     let parts = remainingParts(
@@ -550,7 +558,7 @@ struct DashboardRowView: View {
                     if !parts.isEmpty {
                         Label("Critical in \(parts)", systemImage: "exclamationmark.triangle")
                             .font(.caption)
-                            .foregroundStyle(row.status.color)
+                            .foregroundStyle(statusColor)
                     }
                 case .critical:
                     let parts = remainingParts(
@@ -560,11 +568,12 @@ struct DashboardRowView: View {
                     if !parts.isEmpty {
                         Label("Overdue by \(parts)", systemImage: "exclamationmark.circle.fill")
                             .font(.caption)
-                            .foregroundStyle(row.status.color)
+                            .foregroundStyle(statusColor)
                     }
                 case .noData:
                     EmptyView()
                 }
+            }
             }
         }
         .padding(.vertical, 2)
@@ -594,10 +603,10 @@ struct DashboardRowView: View {
             Text(badgeLabel)
                 .font(.caption2.bold())
         }
-        .foregroundStyle(row.status.color)
+        .foregroundStyle(statusColor)
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(row.status.color.opacity(0.12))
+        .background(statusColor.opacity(0.12))
         .clipShape(Capsule())
     }
 

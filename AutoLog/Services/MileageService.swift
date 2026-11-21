@@ -135,7 +135,7 @@ class MileageService: ObservableObject {
         }
 
         isReading = true
-        obdStatus = "Reading data..."
+        obdStatus = "Reading from the car…"
         captureOffline = !NetworkMonitor.shared.isOnline
 
         // A connect that arrives while the app is in the background (iOS reconnect,
@@ -194,7 +194,7 @@ class MileageService: ObservableObject {
             try await obd.initialize()
             await logEvent(nil, "init", success: true, duration: Self.ms(since: initStart))
         } catch {
-            obdStatus = "OBD init failed"
+            obdStatus = "Couldn't talk to the adapter"
             await logEvent(nil, "init", success: false, error: error.localizedDescription, duration: Self.ms(since: initStart))
             return .failed("init", nil)
         }
@@ -217,7 +217,7 @@ class MileageService: ObservableObject {
 
         do {
             // Read RPM (one retry on a transient bus error)
-            obdStatus = "Reading RPM..."
+            obdStatus = "Checking the engine…"
             var rpm = 0
             var rpmReadSuccess = false
             let rpmAttempts = await obd.sendRetryingTransient("010C")
@@ -259,7 +259,7 @@ class MileageService: ObservableObject {
             let reportedOdometer: Double? = odometer > 0 ? odometer : nil
 
             // Read distance since codes cleared (PID 0131), one retry on a transient bus error
-            obdStatus = "Reading distance..."
+            obdStatus = "Reading distance driven…"
             var distSinceCleared: Double?
             let distAttempts = await obd.sendRetryingTransient("0131")
             let distRaws = distAttempts.compactMap { $0.raw }
@@ -326,7 +326,7 @@ class MileageService: ObservableObject {
                    lastRecord.odometerMiles > 0,
                    odometer < lastRecord.odometerMiles - 1.5 {
                     // Retry once after 2s
-                    obdStatus = "Verifying reading..."
+                    obdStatus = "Double-checking the reading…"
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                     var retryDist: Double?
                     do {
@@ -343,7 +343,7 @@ class MileageService: ObservableObject {
                     }
 
                     if retryOdometer < lastRecord.odometerMiles - 1.5 {
-                        obdStatus = "Bad reading — skipped"
+                        obdStatus = "Reading looked wrong — skipped"
                         requestManualEntry(for: vehicleId)
                         await logEvent(vehicleId, "sanity_check_failed", value: retryOdometer, success: false,
                                   error: "Odometer dropped after retry: \(Int(retryOdometer)) < last \(Int(lastRecord.odometerMiles))")
@@ -436,7 +436,7 @@ class MileageService: ObservableObject {
             }
 
         } catch {
-            obdStatus = "Read failed"
+            obdStatus = "Couldn't read the car"
             await logEvent(connectedId, "connection_error", success: false, error: error.localizedDescription)
             return .failed("exception", connectedId)
         }
@@ -498,7 +498,7 @@ class MileageService: ObservableObject {
         }
         cachedVehicle = nil
 
-        obdStatus = "Identifying car..."
+        obdStatus = "Identifying the car…"
         let (result, attempts) = await obd.readVIN()
 
         switch result {
@@ -703,7 +703,7 @@ class MileageService: ObservableObject {
             guard !Task.isCancelled else { return }
             isThrottled = false
             lastSkipTime = nil
-            obdStatus = "Reconnecting..."
+            obdStatus = "Reconnecting…"
             Log.obd("throttle expired — reconnecting")
             bleManager.captureMode = "throttle_retry"
             bleManager.connectOrScan(trigger: "throttle")

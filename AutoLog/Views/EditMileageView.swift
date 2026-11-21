@@ -42,11 +42,11 @@ struct EditMileageView: View {
                 if !isEditing {
                     Section {
                         if hasOBDBaseline {
-                            Label("Live OBD reading from this car — auto-tracking continues from this entry", systemImage: "checkmark.circle.fill")
+                            Label("Live reading from this car — auto-tracking continues from this entry", systemImage: "checkmark.circle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.green)
                         } else {
-                            Label("No OBD reading from this car in the last 10 minutes. The entry is saved without a baseline, and the next capture will ask you to confirm the odometer.", systemImage: "exclamationmark.triangle.fill")
+                            Label("No recent reading from this car (last 10 minutes). The entry is saved without a baseline, and the next capture will ask you to confirm the odometer.", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
@@ -71,6 +71,7 @@ struct EditMileageView: View {
                 }
             }
             .navigationTitle(isEditing ? "Edit Mileage" : "Add Mileage")
+            .keyboardDoneButton()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -84,15 +85,7 @@ struct EditMileageView: View {
             .confirmationDialog("Delete this record?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
                 Button("Delete", role: .destructive) { Task { await delete() } }
             }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage {
-                    Text(msg)
-                        .font(.caption).foregroundStyle(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(.red.opacity(0.9)).clipShape(Capsule())
-                        .padding(.bottom, 8)
-                }
-            }
+            .errorToast($errorMessage)
         }
     }
 
@@ -127,7 +120,7 @@ struct EditMileageView: View {
             await onSave()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
             if !isEditing {
                 let liveDist = liveDistSinceCleared(vehicleId: vehicleId)
                 SyncManager.shared.queueMileageRecord(
@@ -153,7 +146,7 @@ struct EditMileageView: View {
             await onSave()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
     }
 }

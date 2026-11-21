@@ -54,7 +54,7 @@ struct IntervalEditSheet: View {
                 isNew = true
             }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
     }
 }
@@ -133,7 +133,7 @@ struct ServiceHistorySheet: View {
                 .filter { $0.serviceType == serviceType }
                 .sorted { $0.timestamp > $1.timestamp }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
         isLoading = false
     }

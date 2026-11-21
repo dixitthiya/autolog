@@ -313,7 +313,7 @@ struct PendingRecord: Codable, Identifiable {
         case .mileage: return "Mileage record"
         case .service: return "Service record"
         case .unassigned: return "Unidentified-car reading"
-        case .capture: return "OBD capture"
+        case .capture: return "Car reading"
         case .log: return "Log"
         }
     }

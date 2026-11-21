@@ -31,7 +31,8 @@ struct TiresView: View {
                                 emptyHint
                             }
                         }
-                        .padding([.horizontal, .bottom])
+                        .padding(.horizontal, CarSwitcherLayout.titleLeading)
+                        .padding(.bottom)
                     }
                 }
                 .carSwitcherPageBackground()
@@ -45,9 +46,7 @@ struct TiresView: View {
             .sheet(item: $selectedTire) { tire in
                 EditTireView(tire: tire, currentOdometer: currentOdometer, latestTread: latestTread[tire.id]) { await load() }
             }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage { TireToast(message: msg) { errorMessage = nil } }
-            }
+            .errorToast($errorMessage)
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await load() }
         }
@@ -69,8 +68,13 @@ struct TiresView: View {
             Text("Current Mileage")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Text("\(Int(currentOdometer).formatted()) mi")
+            Text(Fmt.milesOrDash(currentOdometer))
                 .font(.system(size: 30, weight: .bold, design: .rounded))
+            if currentOdometer <= 0 {
+                Text("Enter odometer to start tracking")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -113,11 +117,14 @@ struct TiresView: View {
         }
     }
 
+    @ViewBuilder
     private var maintenanceHint: some View {
+        if !activeTires.isEmpty {
         Label("Log rotations and replacements in Maintenance — this view reflects them. Tap a tire to correct its details.", systemImage: "info.circle")
             .font(.caption)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     @ViewBuilder
@@ -162,7 +169,7 @@ struct TiresView: View {
             // Same: a cancelled URL request, don't surface it.
         } catch {
             guard vehicleId == vehicleStore.viewedVehicleId else { return }
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
             if currentOdometer == 0 { currentOdometer = MileageService.shared.currentMileage(for: vehicleId) }
         }
         isLoading = false
@@ -186,9 +193,12 @@ struct TireCornerCard: View {
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                 Spacer()
-                Image(systemName: "circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(tireYellow)
+                // The dot means "a tire is here"; empty corners have none.
+                if tire != nil {
+                    Image(systemName: "circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(tireYellow)
+                }
             }
 
             if let tire = tire {
@@ -390,6 +400,7 @@ struct EditTireView: View {
                 }
             }
             .navigationTitle("Edit Tire")
+            .keyboardDoneButton()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -403,9 +414,7 @@ struct EditTireView: View {
             .confirmationDialog("Delete this tire?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
                 Button("Delete", role: .destructive) { Task { await delete() } }
             }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage { TireToast(message: msg) { errorMessage = nil } }
-            }
+            .errorToast($errorMessage)
         }
     }
 
@@ -432,7 +441,7 @@ struct EditTireView: View {
             await onSave()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
         isSaving = false
     }
@@ -443,31 +452,7 @@ struct EditTireView: View {
             await onSave()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
-    }
-}
-
-// MARK: - Toast
-
-private struct TireToast: View {
-    let message: String
-    let onDone: () -> Void
-
-    var body: some View {
-        Text(message)
-            .font(.caption)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(.red.opacity(0.9))
-            .clipShape(Capsule())
-            .padding(.bottom, 8)
-            .onAppear {
-                Task {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    onDone()
-                }
-            }
     }
 }

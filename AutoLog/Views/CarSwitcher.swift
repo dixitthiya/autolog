@@ -118,7 +118,7 @@ struct NoCarSelectedView: View {
         ContentUnavailableView(
             "No car selected",
             systemImage: "car",
-            description: Text("Pick a car from the menu under the title. A car is added automatically the first time the OBD adapter reads its VIN.")
+            description: Text("Plug in the OBD adapter and start the car — your car is added automatically.")
         )
     }
 }

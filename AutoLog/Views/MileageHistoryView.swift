@@ -47,9 +47,9 @@ struct MileageHistoryView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button { showAddSheet = true } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
+                        Image(systemName: "plus")
                     }
+                    .accessibilityLabel("Add mileage")
                     .disabled(vehicleStore.viewedVehicleId == nil)
                 }
             }
@@ -59,11 +59,7 @@ struct MileageHistoryView: View {
             .sheet(item: $selectedRecord) { record in
                 EditMileageView(record: record, vehicleId: record.vehicleId) { await loadRecords() }
             }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage {
-                    toastMessage(msg)
-                }
-            }
+            .errorToast($errorMessage)
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             // Reload when the car changes, or when an assigned reading added a record
             .task(id: "\(vehicleStore.viewedVehicleId ?? "-")#\(vehicleStore.dataVersion)") { await loadRecords() }
@@ -94,26 +90,9 @@ struct MileageHistoryView: View {
             // Same: a cancelled URL request, don't surface it.
         } catch {
             guard vehicleId == vehicleStore.viewedVehicleId else { return }
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
         isLoading = false
-    }
-
-    private func toastMessage(_ msg: String) -> some View {
-        Text(msg)
-            .font(.caption)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(.red.opacity(0.9))
-            .clipShape(Capsule())
-            .padding(.bottom, 8)
-            .onAppear {
-                Task {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    errorMessage = nil
-                }
-            }
     }
 }
 
@@ -123,9 +102,9 @@ struct MileageRowView: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(record.timestamp.formatted(date: .abbreviated, time: .shortened))
+                Text(Fmt.dateTime(record.timestamp))
                     .font(.subheadline)
-                Text("\(Int(record.odometerMiles).formatted()) miles")
+                Text(Fmt.miles(record.odometerMiles))
                     .font(.headline.monospacedDigit())
             }
             Spacer()

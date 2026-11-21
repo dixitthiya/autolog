@@ -12,6 +12,9 @@ struct AnalyticsView: View {
     @State private var selectedRotorDate: Date?
     /// The car the charts on screen belong to.
     @State private var loadedVehicleId: String?
+    /// The first load for the car on screen finished (so "empty" is real, not "still loading").
+    @State private var hasLoaded = false
+    @State private var loadFailed = false
     @ObservedObject private var vehicleStore = VehicleStore.shared
     @State private var selectedSpendMonth: String?
     @State private var spendScrubValue: String?
@@ -71,26 +74,37 @@ struct AnalyticsView: View {
                     VStack(spacing: 24) {
                         if vehicleStore.viewedVehicleId == nil {
                             NoCarSelectedView()
+                        } else if loadFailed && !hasLoaded {
+                            ContentUnavailableView("Couldn't load analytics",
+                                systemImage: "exclamationmark.triangle",
+                                description: Text("Pull down to try again."))
+                        } else if hasLoaded && serviceRecords.isEmpty && mileageRecords.isEmpty {
+                            ContentUnavailableView("Not enough data",
+                                systemImage: "chart.xyaxis.line",
+                                description: Text("Not enough data for this car yet."))
                         } else {
                             projectedServiceDates
-                        }
-                        if !allDailyMiles.isEmpty || !monthlyMiles.isEmpty {
-                            comboMileageChart
-                        }
-                        if !monthlySpendData.isEmpty {
-                            monthlySpendChart
-                        }
-                        if !frontRotorData.isEmpty || !rearRotorData.isEmpty {
-                            rotorWearChart
-                        }
-                        if !treadSeries.isEmpty {
-                            tireTreadChart
+                            if !allDailyMiles.isEmpty || !monthlyMiles.isEmpty {
+                                comboMileageChart
+                            }
+                            if !monthlySpendData.isEmpty {
+                                monthlySpendChart
+                            }
+                            if !frontRotorData.isEmpty || !rearRotorData.isEmpty {
+                                rotorWearChart
+                            }
+                            if !treadSeries.isEmpty {
+                                tireTreadChart
+                            }
                         }
                     }
-                    .padding([.horizontal, .bottom])
+                    .padding(.horizontal, CarSwitcherLayout.titleLeading)
+                    .padding(.bottom)
                 }
             }
             .carSwitcherPageBackground()
+            .refreshable { await loadData() }
+            .errorToast($errorMessage)
             .navigationTitle("Analytics")
             .overlay {
                 if isLoading && vehicleStore.viewedVehicleId != nil {
@@ -468,12 +482,12 @@ struct AnalyticsView: View {
                 Spacer()
                 if let selected = selectedSpendMonth,
                    let item = filteredMonthlySpend.first(where: { $0.label == selected }) {
-                    Text("\(item.label): $\(Int(item.total).formatted())")
+                    Text("\(item.label): \(Fmt.money(item.total))")
                         .font(.caption.bold())
                         .foregroundStyle(.green)
                 } else {
                     let total = filteredMonthlySpend.reduce(0.0) { $0 + $1.total }
-                    Text("Total: $\(Int(total).formatted())")
+                    Text("Total: \(Fmt.money(total))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -567,7 +581,7 @@ struct AnalyticsView: View {
                     .font(.subheadline.bold())
                     .lineLimit(1)
                 Spacer()
-                Text("$\(Int(record.amount ?? 0).formatted())")
+                Text(Fmt.money(record.amount ?? 0))
                     .font(.subheadline.bold())
             }
             HStack(alignment: .firstTextBaseline) {
@@ -597,14 +611,23 @@ struct AnalyticsView: View {
                     BarMark(x: .value("Month", item.label), y: .value("$", item.total))
                         .foregroundStyle(.clear)
                         .annotation(position: .top) {
-                            Text("$\(Int(item.total).formatted())")
+                            Text(Fmt.money(item.total))
                                 .font(.caption2.bold())
                                 .foregroundStyle(.green)
                         }
                 }
             }
         }
-        .chartYAxisLabel("$")
+        .chartYAxis {
+            AxisMarks { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let dollars = value.as(Double.self) {
+                        Text(dollars.formatted(.currency(code: "USD").precision(.fractionLength(0))))
+                    }
+                }
+            }
+        }
         .frame(height: 220)
 
         if spendTimeFilter == .all && filteredMonthlySpend.count > 6 {
@@ -1095,7 +1118,7 @@ struct AnalyticsView: View {
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(.red)
+                                .background(isViewedCarRetired ? Color.gray : Color.red)
                                 .clipShape(Capsule())
                         case .due:
                             Text("DUE")
@@ -1103,20 +1126,19 @@ struct AnalyticsView: View {
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(ServiceStatus.serviceSoon.color)
+                                .background(isViewedCarRetired ? Color.gray : ServiceStatus.serviceSoon.color)
                                 .clipShape(Capsule())
                         case .projected(let date):
                             Text(date.formatted(date: .abbreviated, time: .omitted))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         case .noData:
-                            Text("No data")
+                            Text("Not enough data")
                                 .font(.caption2.bold())
-                                .foregroundStyle(.white)
+                                .foregroundStyle(.secondary)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
-                                .background(.gray)
-                                .clipShape(Capsule())
+                                .background(Color(.secondarySystemFill), in: Capsule())
                         }
                     }
                     .padding(.vertical, 2)
@@ -1130,6 +1152,10 @@ struct AnalyticsView: View {
 
     // MARK: - Data Loading
 
+    private var isViewedCarRetired: Bool {
+        vehicleStore.viewedVehicle.map { !$0.isActive } ?? false
+    }
+
     /// Drop the previous car's data so its charts are never shown under another car.
     private func clearCarData() {
         serviceRecords = []
@@ -1141,6 +1167,8 @@ struct AnalyticsView: View {
         selectedSpendMonth = nil
         selectedComboDay = nil
         selectedComboMonth = nil
+        hasLoaded = false
+        loadFailed = false
         loadedVehicleId = vehicleStore.viewedVehicleId
     }
 
@@ -1169,9 +1197,12 @@ struct AnalyticsView: View {
             thresholds = loadedThresholds
             tires = loadedTires
             treadReadings = loadedTread
+            hasLoaded = true
+            loadFailed = false
         } catch {
             guard vehicleId == vehicleStore.viewedVehicleId else { return }
-            errorMessage = error.localizedDescription
+            loadFailed = true
+            errorMessage = error.userMessage
         }
         isLoading = false
     }

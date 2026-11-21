@@ -22,7 +22,7 @@ struct VehiclesView: View {
                     ContentUnavailableView(
                         "No vehicles",
                         systemImage: "car",
-                        description: Text("A car is added automatically the first time the OBD adapter reads its VIN.")
+                        description: Text("Plug in the OBD adapter and start the car — your car is added automatically.")
                     )
                 }
             }
@@ -71,7 +71,7 @@ private struct VehicleRowView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(vehicle.vin ?? "No VIN on file")
+            Text(vehicle.vin ?? "No vehicle ID on file")
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
         }
@@ -133,7 +133,7 @@ struct EditVehicleView: View {
             }
 
             Section {
-                LabeledContent("VIN") {
+                LabeledContent("Vehicle ID") {
                     Text(vehicle.vin ?? "Not on file")
                         .font(.body.monospaced())
                         .textSelection(.enabled)
@@ -151,12 +151,13 @@ struct EditVehicleView: View {
                 }
                 .disabled(vehicle.vin == nil || isLookingUp)
             } header: {
-                Text("VIN")
+                Text("Vehicle ID")
             } footer: {
                 Text(lookupMessage ?? "Uses the free NHTSA decoder (US cars). Fills only empty fields; tap Save to keep them.")
             }
         }
         .navigationTitle(vehicle.displayName)
+        .keyboardDoneButton()
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
@@ -175,21 +176,7 @@ struct EditVehicleView: View {
         } message: {
             Text("Captures from this car will be skipped and its reminders removed. Its history stays.")
         }
-        .overlay(alignment: .bottom) {
-            if let msg = errorMessage {
-                Text(msg)
-                    .font(.caption).foregroundStyle(.white)
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(.red.opacity(0.9)).clipShape(Capsule())
-                    .padding(.bottom, 8)
-                    .onAppear {
-                        Task {
-                            try? await Task.sleep(nanoseconds: 3_000_000_000)
-                            errorMessage = nil
-                        }
-                    }
-            }
-        }
+        .errorToast($errorMessage)
     }
 
     private func clean(_ text: String) -> String? {
@@ -227,7 +214,7 @@ struct EditVehicleView: View {
             await VehicleStore.shared.vehicleDidChange(updated)
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
         isSaving = false
     }
@@ -269,7 +256,7 @@ struct EditVehicleView: View {
                 ? "Nothing to fill — those fields already have values."
                 : "Filled \(filled.joined(separator: ", ")) from NHTSA. Tap Save to keep."
         } catch {
-            lookupMessage = "Lookup failed: \(error.localizedDescription)"
+            lookupMessage = "Couldn't look up details: \(error.userMessage)"
         }
     }
 }

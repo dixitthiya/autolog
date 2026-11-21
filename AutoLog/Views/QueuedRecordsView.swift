@@ -54,28 +54,34 @@ struct QueuedRecordsView: View {
                     .foregroundStyle(.secondary)
             }
             if let time = record.eventTime {
-                Text(time.formatted(date: .abbreviated, time: .shortened))
+                Text(Fmt.dateTime(time))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            HStack(spacing: 12) {
-                Text("Retries: \(record.retryCount)")
+            if record.retryCount > Config.maxRetryCount {
+                Text("Needs attention")
+                    .font(.caption.bold())
+                    .foregroundStyle(.red)
+            } else {
+                Text("Will retry automatically")
                     .font(.caption)
-                    .foregroundStyle(record.retryCount > Config.maxRetryCount ? .red : .secondary)
-                if record.retryCount > Config.maxRetryCount {
-                    Text("Gave up")
-                        .font(.caption.bold())
-                        .foregroundStyle(.red)
-                }
+                    .foregroundStyle(.secondary)
             }
             if let error = record.lastError, !error.isEmpty {
-                Text(error)
+                Text(Self.friendly(error))
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// Plain wording for the reasons the sync code records.
+    private static func friendly(_ reason: String) -> String {
+        if reason == "Offline" { return "Waiting for a connection" }
+        if reason.localizedCaseInsensitiveContains("migration") { return "Waiting for the database to be ready" }
+        return reason
     }
 
     private func vehicleName(for record: PendingRecord) -> String {

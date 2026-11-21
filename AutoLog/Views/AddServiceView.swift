@@ -154,6 +154,7 @@ struct AddServiceView: View {
                 }
             }
             .navigationTitle("Add Service")
+            .keyboardDoneButton()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -164,15 +165,7 @@ struct AddServiceView: View {
                         .disabled(isSaving || selectedType.isEmpty || odometerText.isEmpty || (isTireReplacement && replacementCorners.isEmpty) || (isAddingNew && trimmedCustomType.isEmpty))
                 }
             }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage {
-                    Text(msg)
-                        .font(.caption).foregroundStyle(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(.red.opacity(0.9)).clipShape(Capsule())
-                        .padding(.bottom, 8)
-                }
-            }
+            .errorToast($errorMessage)
             .task { await loadDefaults() }
         }
     }
@@ -240,7 +233,7 @@ struct AddServiceView: View {
             await onSave()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
             SyncManager.shared.queueServiceRecord(record)
         }
         isSaving = false

@@ -1556,10 +1556,11 @@ enum NeonError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidURL: return "Invalid Neon database URL"
-        case .invalidResponse: return "Invalid response from server"
-        case .httpError(let code, let msg): return "HTTP \(code): \(msg)"
-        case .missingVehicle: return "No vehicle selected for this record"
+        // Plain sentences only: the raw HTTP status and server text are logged by `execute`.
+        case .invalidURL: return "The database address is invalid."
+        case .invalidResponse: return "The database sent an unexpected reply."
+        case .httpError: return "The database couldn't complete that request."
+        case .missingVehicle: return "No car is selected for this entry."
         }
     }
 }

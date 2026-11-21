@@ -14,8 +14,15 @@ struct ServiceIntervalsView: View {
     @State private var pendingDelete: ServiceThreshold?
     @State private var addingType: String?
 
-    private var sortedThresholds: [ServiceThreshold] {
-        thresholds.sorted { $0.serviceType < $1.serviceType }
+    /// Intervals grouped by service category, categories and types A–Z.
+    private var groupedThresholds: [(String, [ServiceThreshold])] {
+        var byCategory: [String: [ServiceThreshold]] = [:]
+        for threshold in thresholds {
+            byCategory[ServiceCategory.category(for: threshold.serviceType), default: []].append(threshold)
+        }
+        return byCategory
+            .map { ($0.key, $0.value.sorted { $0.serviceType < $1.serviceType }) }
+            .sorted { $0.0 < $1.0 }
     }
 
     /// Catalog types this car has no interval for yet, by category.
@@ -32,24 +39,30 @@ struct ServiceIntervalsView: View {
             List {
                 TargetCarSection(vehicleId: vehicleId)
 
-                Section {
-                    ForEach(sortedThresholds, id: \.serviceType) { threshold in
-                        NavigationLink {
-                            EditIntervalView(vehicleId: vehicleId, threshold: threshold, isNew: false) {
-                                await intervalsChanged()
-                            }
-                        } label: {
-                            IntervalRowView(threshold: threshold)
-                        }
-                        .swipeActions {
-                            Button {
-                                pendingDelete = threshold
+                ForEach(groupedThresholds, id: \.0) { category, items in
+                    Section(category) {
+                        ForEach(items, id: \.serviceType) { threshold in
+                            NavigationLink {
+                                EditIntervalView(vehicleId: vehicleId, threshold: threshold, isNew: false) {
+                                    await intervalsChanged()
+                                }
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                IntervalRowView(threshold: threshold)
                             }
-                            .tint(.red)
+                            .swipeActions {
+                                Button {
+                                    pendingDelete = threshold
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                                .tint(.red)
+                            }
                         }
                     }
+                }
+
+                Section {
+                    EmptyView()
                 } footer: {
                     Text("Each interval puts that service on this car's Dashboard and schedules its reminders. Swipe left to delete one; the car's service history is kept.")
                 }
@@ -66,7 +79,7 @@ struct ServiceIntervalsView: View {
             .navigationTitle("Service Intervals")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .primaryAction) {
@@ -79,9 +92,9 @@ struct ServiceIntervalsView: View {
                             }
                         }
                     } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
+                        Image(systemName: "plus")
                     }
+                    .accessibilityLabel("Add interval")
                     .disabled(addableCategories.isEmpty)
                 }
             }
@@ -102,21 +115,7 @@ struct ServiceIntervalsView: View {
             } message: { threshold in
                 Text("\(threshold.serviceType) will no longer appear on this car's Dashboard or get reminders. Its service history is kept.")
             }
-            .overlay(alignment: .bottom) {
-                if let msg = errorMessage {
-                    Text(msg)
-                        .font(.caption).foregroundStyle(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 8)
-                        .background(.red.opacity(0.9)).clipShape(Capsule())
-                        .padding(.bottom, 8)
-                        .onAppear {
-                            Task {
-                                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                                errorMessage = nil
-                            }
-                        }
-                }
-            }
+            .errorToast($errorMessage)
             .task { await load() }
         }
     }
@@ -126,7 +125,7 @@ struct ServiceIntervalsView: View {
         do {
             thresholds = try await NeonRepository.shared.getThresholds(vehicleId: vehicleId)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
         isLoading = false
     }
@@ -136,7 +135,7 @@ struct ServiceIntervalsView: View {
             try await NeonRepository.shared.deleteThreshold(vehicleId: vehicleId, serviceType: threshold.serviceType)
             await intervalsChanged()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
     }
 
@@ -251,6 +250,7 @@ struct EditIntervalView: View {
             }
         }
         .navigationTitle(threshold.serviceType)
+        .keyboardDoneButton()
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
@@ -258,15 +258,7 @@ struct EditIntervalView: View {
                     .disabled(isSaving)
             }
         }
-        .overlay(alignment: .bottom) {
-            if let msg = errorMessage {
-                Text(msg)
-                    .font(.caption).foregroundStyle(.white)
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(.red.opacity(0.9)).clipShape(Capsule())
-                    .padding(.bottom, 8)
-            }
-        }
+        .errorToast($errorMessage)
     }
 
     /// nil for blank; throws a readable message for anything that isn't a positive number.
@@ -306,7 +298,7 @@ struct EditIntervalView: View {
                 throw IntervalInputError("Enter at least one limit")
             }
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
             return
         }
 
@@ -316,7 +308,7 @@ struct EditIntervalView: View {
             await onSave()
             dismiss()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = error.userMessage
         }
         isSaving = false
     }

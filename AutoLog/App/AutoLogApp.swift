@@ -107,11 +107,24 @@ struct ContentView: View {
     @State private var toast: String?
     /// A retired car the adapter just connected to, offered for reactivation.
     @State private var retiredPrompt: Vehicle?
+    /// Retired cars the user answered "Not now" for; not asked again until the
+    /// app relaunches or the car is reactivated.
+    @State private var dismissedRetiredIds: Set<String> = []
+    /// The car of the previous saved capture. The view only follows the adapter
+    /// when this changes (a different car was plugged in), not on every capture.
+    @State private var lastCapturedVehicleId: String?
+    /// The user picked a car by hand since the previous capture; don't override it.
+    @State private var manualPickSinceLastCapture = false
+    /// The car the app itself switched to, so that switch isn't taken for a manual pick.
+    @State private var autoSwitchedId: String?
 
     var body: some View {
         tabs
             .onChange(of: mileageService.lastCaptureEnd) { _, event in
                 if let event { captureEnded(event) }
+            }
+            .onChange(of: vehicleStore.selectedVehicleId) { _, picked in
+                if picked != autoSwitchedId { manualPickSinceLastCapture = true }
             }
             .overlay(alignment: .top) {
                 if let toast {
@@ -145,7 +158,7 @@ struct ContentView: View {
                 presenting: retiredPrompt
             ) { car in
                 Button("Reactivate") { Task { await reactivate(car) } }
-                Button("Not now", role: .cancel) {}
+                Button("Not now", role: .cancel) { dismissedRetiredIds.insert(car.id) }
             } message: { _ in
                 Text("Reactivate it to record mileage?")
             }
@@ -153,17 +166,29 @@ struct ContentView: View {
 
     /// React to how a capture ended — UI only; the capture itself is already done.
     private func captureEnded(_ event: MileageService.CaptureEndEvent) {
-        guard UIApplication.shared.applicationState == .active, let vehicleId = event.vehicleId else { return }
+        // A reading from an unidentified car was kept: refresh "Unassigned (N)".
+        if event.outcome.hasPrefix("skipped_vehicle_unknown") {
+            Task { await vehicleStore.refreshUnassignedCount() }
+        }
+        guard let vehicleId = event.vehicleId else { return }
+        let isActive = UIApplication.shared.applicationState == .active
+
         switch event.outcome {
         case "saved", "updated":
-            // Show the car that was just captured, if it isn't the one on screen.
-            guard vehicleId != vehicleStore.viewedVehicleId else { return }
+            // Follow the adapter only when a different car was plugged in than at
+            // the previous capture, and never over a car picked by hand since.
+            let carChanged = lastCapturedVehicleId != vehicleId
+            let pickedByHand = manualPickSinceLastCapture
+            lastCapturedVehicleId = vehicleId
+            manualPickSinceLastCapture = false
+            guard carChanged, !pickedByHand, isActive, vehicleId != vehicleStore.viewedVehicleId else { return }
+            autoSwitchedId = vehicleId
             vehicleStore.selectedVehicleId = vehicleId
             let name = vehicleStore.vehicle(id: vehicleId)?.displayName ?? "the plugged-in car"
             showToast("Switched to \(name) (plugged in)")
         case "skipped_retired_vehicle":
-            // One prompt per connection; don't stack a second one on top.
-            guard retiredPrompt == nil else { return }
+            // Asked once per car (until relaunch); never stacked on a prompt already showing.
+            guard isActive, retiredPrompt == nil, !dismissedRetiredIds.contains(vehicleId) else { return }
             retiredPrompt = vehicleStore.vehicle(id: vehicleId)
                 ?? vehicleStore.connectedVehicle.flatMap { $0.id == vehicleId ? $0 : nil }
         default:
@@ -176,11 +201,12 @@ struct ContentView: View {
     private func reactivate(_ car: Vehicle) async {
         var active = car
         active.status = .active
+        dismissedRetiredIds.remove(car.id)
         do {
             try await NeonRepository.shared.setVehicleStatus(id: car.id, status: .active)
             await vehicleStore.vehicleDidChange(active)
         } catch {
-            showToast("Couldn't reactivate \(car.displayName): \(error.localizedDescription)")
+            showToast("Couldn't reactivate \(car.displayName): \(error.userMessage)")
             return
         }
         guard !mileageService.isReading else { return }
