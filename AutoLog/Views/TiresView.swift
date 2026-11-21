@@ -19,11 +19,7 @@ struct TiresView: View {
             ZStack {
                 ScrollView {
                     VStack(spacing: 0) {
-                        // 8 pt under the title, 16 pt above the content
-                        CarSwitcherRow()
-                            .padding(.horizontal)
-                            .padding(.top, 8)
-                            .padding(.bottom, 16)
+                        CarSwitcherHeader()
                         VStack(spacing: 16) {
                             if vehicleStore.viewedVehicleId == nil {
                                 NoCarSelectedView()
@@ -38,6 +34,7 @@ struct TiresView: View {
                         .padding([.horizontal, .bottom])
                     }
                 }
+                .carSwitcherPageBackground()
                 .refreshable { await load() }
 
                 if isLoading && tires.isEmpty {

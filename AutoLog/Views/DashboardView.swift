@@ -25,9 +25,9 @@ struct DashboardView: View {
                 ScrollViewReader { proxy in
                     List {
                         Section {
-                            CarSwitcherRow()
+                            CarSwitcherHeader(leadingInset: 0)
                         }
-                        .carSwitcherListRow()
+                        .carSwitcherListHeader()
                         if vehicleStore.viewedVehicleId == nil {
                             Section { NoCarSelectedView() }
                         } else {
@@ -47,6 +47,7 @@ struct DashboardView: View {
                             trackedSection
                         }
                     }
+                    .carSwitcherListContainer()
                     .scrollDismissesKeyboard(.immediately)
                     .refreshable { await loadDashboard() }
                     .onChange(of: trackedSearchFocused) { _, focused in

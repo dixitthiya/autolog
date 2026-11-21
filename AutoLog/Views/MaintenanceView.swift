@@ -21,13 +21,9 @@ struct MaintenanceView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Fixed header: car picker above the filter bar. 8 pt under the
-                // title; 8 pt here + the filter bar's own 8 pt = 16 pt to the chips.
-                CarSwitcherRow()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Fixed header above the filter bar: 8 pt here + the filter bar's
+                // own 8 pt top padding = 16 pt from the pill to the chips.
+                CarSwitcherHeader(bottom: 8)
                 filterBar
                 ZStack {
                     List {
@@ -52,6 +48,7 @@ struct MaintenanceView: View {
                     }
                 }
             }
+            .carSwitcherPageBackground()
             .navigationTitle("Maintenance")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -111,10 +108,9 @@ struct MaintenanceView: View {
                     .clipShape(Capsule())
                 }
             }
-            .padding(.horizontal)
+            .padding(.horizontal, CarSwitcherLayout.titleLeading)
             .padding(.vertical, 8)
         }
-        .background(Color(.systemGroupedBackground))
     }
 
     /// Drop the previous car's records so they are never shown under another car.

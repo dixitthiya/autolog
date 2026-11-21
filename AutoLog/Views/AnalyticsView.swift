@@ -67,11 +67,7 @@ struct AnalyticsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 0) {
-                    // 8 pt under the title, 16 pt above the content
-                    CarSwitcherRow()
-                        .padding(.horizontal)
-                        .padding(.top, 8)
-                        .padding(.bottom, 16)
+                    CarSwitcherHeader()
                     VStack(spacing: 24) {
                         if vehicleStore.viewedVehicleId == nil {
                             NoCarSelectedView()
@@ -94,6 +90,7 @@ struct AnalyticsView: View {
                     .padding([.horizontal, .bottom])
                 }
             }
+            .carSwitcherPageBackground()
             .navigationTitle("Analytics")
             .overlay {
                 if isLoading && vehicleStore.viewedVehicleId != nil {

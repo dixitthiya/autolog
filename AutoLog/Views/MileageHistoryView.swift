@@ -15,9 +15,9 @@ struct MileageHistoryView: View {
             ZStack {
                 List {
                     Section {
-                        CarSwitcherRow()
+                        CarSwitcherHeader(leadingInset: 0)
                     }
-                    .carSwitcherListRow()
+                    .carSwitcherListHeader()
 
                     // Empty states are rows, so the car picker above stays visible
                     if vehicleStore.viewedVehicleId == nil {
@@ -36,6 +36,7 @@ struct MileageHistoryView: View {
                             .onTapGesture { selectedRecord = record }
                     }
                 }
+                .carSwitcherListContainer()
                 .refreshable { await loadRecords() }
 
                 if isLoading && records.isEmpty {

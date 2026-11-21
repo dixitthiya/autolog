@@ -26,17 +26,6 @@ struct CarSwitcherRow: View {
 }
 
 extension View {
-    /// The picker row at the top of a `List`: no background or separator, inset
-    /// like the large title — 8 pt below the title, 16 pt above what follows.
-    /// Apply to the row's `Section`.
-    func carSwitcherListRow() -> some View {
-        self
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 16, trailing: 16))
-            .listSectionSpacing(.custom(0))
-    }
-
     /// An empty-state message shown as a plain row below the picker.
     func emptyStateListRow() -> some View {
         self
