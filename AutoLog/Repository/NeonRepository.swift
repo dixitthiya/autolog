@@ -387,6 +387,11 @@ actor NeonRepository {
             )
         """)
 
+        // A6b: the car a rejected offline reading is known to belong to (pre-selected on the Assign screen)
+        try await executeNoResult("""
+            ALTER TABLE unassigned_readings ADD COLUMN IF NOT EXISTS suggested_vehicle_id TEXT REFERENCES vehicles(id)
+        """)
+
         // A7
         let indexes = [
             "CREATE INDEX IF NOT EXISTS idx_mileage_records_vehicle_ts ON mileage_records (vehicle_id, timestamp DESC)",
@@ -767,13 +772,14 @@ actor NeonRepository {
     func saveUnassignedReading(_ r: UnassignedReading) async throws {
         try await executeNoResult("""
             INSERT INTO unassigned_readings (id, timestamp, failure_reason, vin_raw_response, peripheral_id,
-                capture_mode, rpm, odometer_raw_response, dist_since_codes_cleared, dist_raw_response)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                capture_mode, rpm, odometer_raw_response, dist_since_codes_cleared, dist_raw_response,
+                suggested_vehicle_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO NOTHING
         """, params: [
             r.id, r.timestamp, r.failureReason, r.vinRawResponse as Any, r.peripheralId as Any,
             r.captureMode as Any, r.rpm as Any, r.odometerRawResponse as Any,
-            r.distSinceCodesCleared as Any, r.distRawResponse as Any
+            r.distSinceCodesCleared as Any, r.distRawResponse as Any, r.suggestedVehicleId as Any
         ])
     }
 
@@ -781,7 +787,8 @@ actor NeonRepository {
     func getUnassignedReadings() async throws -> [UnassignedReading] {
         let rows = try await execute("""
             SELECT id, timestamp, failure_reason, vin_raw_response, peripheral_id, capture_mode, rpm,
-                   odometer_raw_response, dist_since_codes_cleared, dist_raw_response, assigned_vehicle_id, assigned_at
+                   odometer_raw_response, dist_since_codes_cleared, dist_raw_response, assigned_vehicle_id, assigned_at,
+                   suggested_vehicle_id
             FROM unassigned_readings WHERE assigned_vehicle_id IS NULL ORDER BY timestamp DESC
         """)
         return rows.compactMap { row in
@@ -799,7 +806,8 @@ actor NeonRepository {
                 distSinceCodesCleared: parseDouble(row["dist_since_codes_cleared"]),
                 distRawResponse: parseString(row["dist_raw_response"]),
                 assignedVehicleId: parseString(row["assigned_vehicle_id"]),
-                assignedAt: parseDate(row["assigned_at"])
+                assignedAt: parseDate(row["assigned_at"]),
+                suggestedVehicleId: parseString(row["suggested_vehicle_id"])
             )
         }
     }

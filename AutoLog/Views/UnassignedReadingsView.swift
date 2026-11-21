@@ -120,6 +120,12 @@ extension UnassignedReading {
         case "vin_invalid": return "Vehicle ID reply was unreadable"
         case "vin_lookup_error": return "Vehicle ID read, but the car lookup failed"
         case "vin_unknown_offline": return "Offline, and the vehicle ID wasn't a known car"
+        // Offline readings that couldn't be converted to an odometer (car already known)
+        case "no_manual_reference": return "Taken offline — this car has no odometer entry to work from"
+        case "reference_missing_0131": return "Taken offline — the car's last odometer entry has no baseline reading"
+        case "negative_delta": return "Taken offline — the distance reading is lower than at the car's last odometer entry"
+        case "no_0131_reading": return "Taken offline — the reading has no distance value"
+        case "sanity_check": return "Taken offline — the worked-out odometer was lower than an earlier reading"
         default: return reason
         }
     }
@@ -309,7 +315,10 @@ struct AssignReadingView: View {
         case "negative_delta":
             return "The reading's distance value is below the one at this car's latest manual entry (that entry is newer than the reading, or the codes were cleared). Enter what the odometer showed at that moment."
         case "sanity_check":
-            return "The worked-out odometer is lower than a reading this car already had before then — the reading may belong to another car. Only continue if you know the odometer at that moment."
+            let known = reading.suggestedVehicleId != nil && selectedVehicleId == reading.suggestedVehicleId
+            return known
+                ? "The worked-out odometer is lower than a reading this car already had before then. Enter what the odometer showed at that moment."
+                : "The worked-out odometer is lower than a reading this car already had before then — the reading may belong to another car. Only continue if you know the odometer at that moment."
         case "no_0131_reading":
             return "The reading has no distance value to work from. Enter what the odometer showed at that moment."
         default:
@@ -319,6 +328,11 @@ struct AssignReadingView: View {
 
     /// The car whose VIN appears in the reading's raw VIN reply, if it is a known active car.
     private func suggestedVehicleId() -> String? {
+        // A rejected offline reading already knows its car.
+        if let known = reading.suggestedVehicleId,
+           vehicleStore.vehicle(id: known)?.isActive == true {
+            return known
+        }
         guard let raw = reading.vinRawResponse else { return nil }
         for part in raw.components(separatedBy: " | ") {
             guard case .vin(let vin) = PIDParser.parseVIN(part) else { continue }

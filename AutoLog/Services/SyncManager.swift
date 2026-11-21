@@ -219,11 +219,24 @@ class SyncManager: ObservableObject {
         }
     }
 
-    /// A capture that can't become a row is dropped, but only after a log row
-    /// says why. The row carries the car, when the reading was taken, the raw
-    /// 0131 value, rpm and the reason — enough to recover it by hand. If the log
-    /// can't be written this throws and the capture stays queued.
+    /// A capture that can't become a row is moved to Unassigned readings (car
+    /// pre-filled, rejection code as the reason) so it can be fixed on the Assign
+    /// screen, and a log row says why. The log row carries the car, when the reading
+    /// was taken, the raw 0131 value, rpm and the reason. The capture leaves the
+    /// queue only after both are written; if either throws it stays queued, and a
+    /// retry is harmless (same ids, ON CONFLICT DO NOTHING).
     private func reject(_ c: PendingCapture, reason: String, detail: String) async throws {
+        try await NeonRepository.shared.saveUnassignedReading(UnassignedReading(
+            id: c.id,
+            timestamp: c.timestamp,
+            failureReason: reason,
+            captureMode: c.captureMode,
+            rpm: c.rpm,
+            odometerRawResponse: c.odometerRawResponse,
+            distSinceCodesCleared: c.distSinceCodesCleared,
+            distRawResponse: c.distRawResponse,
+            suggestedVehicleId: c.vehicleId))
+
         let stamp = ISO8601DateFormatter().string(from: c.timestamp)
         let raw = [
             "capture_ts=\(stamp)",
@@ -239,7 +252,7 @@ class SyncManager: ObservableObject {
             parsedValue: c.distSinceCodesCleared, success: false,
             errorMessage: "\(reason): \(detail)", durationMs: nil)
         try await NeonRepository.shared.writeOBDEvent(entry)
-        Log.sync("dropped queued capture (\(reason))")
+        Log.sync("queued capture moved to unassigned (\(reason))")
     }
 
     // MARK: - Storage

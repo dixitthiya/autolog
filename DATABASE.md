@@ -152,7 +152,7 @@ Index: `(vehicle_id, event_type, timestamp DESC)`.
 
 **Offline rows.** While offline only `capture_end` is queued, so these rows can arrive late: their `timestamp` is when the capture ended, not when they were written. Other per-command rows (`init`, `vin_read`, `rpm_check`, …) are not written for an offline capture.
 
-**`replay_rejected`** — written when a queued offline capture could not become a mileage row and was dropped from the queue. `vehicle_id` is the car it was captured under; `parsed_value` is the 0131 value; `error_message` is `<reason>: <detail>` with reason `no_manual_reference`, `negative_delta` (codes cleared), `reference_missing_0131`, `no_0131_reading` or `sanity_check` (computed odometer more than 1.5 mi below the car's last record at capture time); `raw_response` is `capture_ts=<ISO 8601> mode=<capture_mode> rpm=<n> dist=<0131> dist_raw=<raw reply> odometer_raw=<raw reply>`, enough to re-enter the reading by hand. Its `timestamp` is the replay time.
+**`replay_rejected`** — written when a queued offline capture could not become a mileage row. The reading is moved to `unassigned_readings` (with `suggested_vehicle_id` set) and removed from the queue; this row is the diagnostic record. `vehicle_id` is the car it was captured under; `parsed_value` is the 0131 value; `error_message` is `<reason>: <detail>` with reason `no_manual_reference`, `negative_delta` (codes cleared), `reference_missing_0131`, `no_0131_reading` or `sanity_check` (computed odometer more than 1.5 mi below the car's last record at capture time); `raw_response` is `capture_ts=<ISO 8601> mode=<capture_mode> rpm=<n> dist=<0131> dist_raw=<raw reply> odometer_raw=<raw reply>`, the same reading is also in `unassigned_readings`. Its `timestamp` is the replay time.
 
 ---
 
@@ -160,7 +160,7 @@ Index: `(vehicle_id, event_type, timestamp DESC)`.
 
 `UserDefaults["pendingRecords"]` — JSON array replayed in order by `SyncManager.syncAll()` on foreground, when the network returns, and after each online capture. Old queues still decode (every added field is optional); a record this build can't read is skipped, not fatal. Each record has a `queueId`, a `retryCount` and a `lastError`. Types: `mileage`, `service`, `unassigned` (as before; records without a car are the Elantra's), plus:
 
-- `capture` — a raw reading taken while the database was unreachable: car id (from the VIN at capture time, never from replay time), timestamp, 0131, 01A6 if reported, rpm. On replay the odometer is computed with the same math as a live capture (`MileageMath`) from the car's history *as of the capture time*, then the car's BLE_AUTO row for the capture's *day* is updated or inserted (an existing newer row is left alone). One queued capture per car per day. Rejected captures are logged (`replay_rejected`) and dropped.
+- `capture` — a raw reading taken while the database was unreachable: car id (from the VIN at capture time, never from replay time), timestamp, 0131, 01A6 if reported, rpm. On replay the odometer is computed with the same math as a live capture (`MileageMath`) from the car's history *as of the capture time*, then the car's BLE_AUTO row for the capture's *day* is updated or inserted (an existing newer row is left alone). One queued capture per car per day. Rejected captures are saved to `unassigned_readings` (`failure_reason` = the rejection code, `suggested_vehicle_id` = the car) and logged (`replay_rejected`), and only then leave the queue.
 - `log` — a queued `capture_end` row. At most 25 are kept, oldest dropped first; data records are never dropped to make room.
 
 Offline failures don't count as retries. A record stops being retried after `Config.maxRetryCount` failures that are not network errors, and stays visible in the "waiting to sync" list.
@@ -171,7 +171,7 @@ Also on the phone: `multiCarMigrationConfirmed` (set once `multi_car_v1` is conf
 
 ### unassigned_readings
 
-Captures whose car could not be identified (VIN read failed). Never guessed into a car; kept here to be assigned later on the Unassigned Readings screen. Only written when the capture produced a 0131 or 01A6 value.
+Captures whose car could not be identified (VIN read failed). Never guessed into a car; kept here to be assigned later on the Unassigned Readings screen. Only written when the capture produced a 0131 or 01A6 value. Also receives queued offline readings that couldn't be converted to an odometer on replay: `failure_reason` is then the rejection code (`no_manual_reference`, `negative_delta`, `reference_missing_0131`, `no_0131_reading`, `sanity_check`) and `suggested_vehicle_id` is the car; the row id is the capture's id, so a retried replay is a no-op.
 
 **Assigning** (to an active car only): the odometer is worked out with the same rules as an offline-queue replay (`ReadingImporter`: the car's manual reference, its history as of the reading's time, the 1.5 mi sanity check), then written as that car's BLE_AUTO row for the reading's day — inserted with the reading's `id`, or updating that day's row only if the reading is newer; a newer row is left alone. If the odometer can't be worked out, the user types the odometer at that moment and it is saved as a `MANUAL` row (id = the reading's id, timestamp = the reading's, `dist_since_codes_cleared` = the reading's 0131). `assigned_vehicle_id` / `assigned_at` are set only after that save. No snapshot is written for an assigned reading.
 
@@ -189,6 +189,7 @@ Captures whose car could not be identified (VIN read failed). Never guessed into
 | dist_raw_response | TEXT | YES | Raw 0131 reply; joined with ` \| ` if it was retried |
 | assigned_vehicle_id | TEXT | YES, FK | Car it was assigned to (NULL = still unassigned) |
 | assigned_at | TIMESTAMPTZ | YES | When it was assigned |
+| suggested_vehicle_id | TEXT | YES, FK | Car a rejected offline reading was captured under; pre-selected on the Assign screen. NULL for readings whose car was never identified |
 | created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Row creation time |
 
 ---
@@ -271,7 +272,7 @@ Markers for one-time migrations.
 Schema migrations are handled inline in `NeonRepository.initializeSchema()` using `IF NOT EXISTS` / `ON CONFLICT DO NOTHING`, so they are safe to run on every launch. No separate migration files.
 
 **multi_car_v1** (`migrateMultiCar()`):
-- Phase A (every launch, each statement idempotent): create `vehicles`, `schema_migrations`, `unassigned_readings`; insert the Elantra; add `vehicle_id` to the 8 per-car tables and `duration_ms` to `obd_connection_logs`; create indexes.
+- Phase A (every launch, each statement idempotent): create `vehicles`, `schema_migrations`, `unassigned_readings` (+ `suggested_vehicle_id`); insert the Elantra; add `vehicle_id` to the 8 per-car tables and `duration_ms` to `obd_connection_logs`; create indexes.
 - Phase B (one `DO` block = one transaction, skipped once the `multi_car_v1` marker exists): backfill every NULL `vehicle_id` to the Elantra (logs only if older than the Elantra row), `SET NOT NULL` on all per-car tables except `obd_connection_logs`, change the `service_thresholds` PK to `(vehicle_id, service_type)` (guarded via `pg_constraint`), write the marker.
 - Until the marker is confirmed in a launch the app makes no captures, and reads treat a NULL `vehicle_id` as the Elantra.
 

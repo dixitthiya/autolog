@@ -73,4 +73,6 @@ struct UnassignedReading: Codable, Identifiable {
     var distRawResponse: String?
     var assignedVehicleId: String?
     var assignedAt: Date?
+    /// The car a rejected offline reading came from; pre-selected when assigning.
+    var suggestedVehicleId: String?
 }
