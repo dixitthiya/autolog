@@ -25,6 +25,16 @@ class MileageService: ObservableObject {
     @Published var manualEntryVehicleId: String?
     @Published var lastCaptureInfo: String = ""
     @Published var isThrottled = false
+    /// How the last capture ended, for the UI to react to (switch the viewed
+    /// car, offer to reactivate a retired one). Read-only for everyone else.
+    @Published private(set) var lastCaptureEnd: CaptureEndEvent?
+
+    struct CaptureEndEvent: Equatable {
+        let id = UUID()
+        /// Same as the capture_end outcome: saved, updated, skipped_<reason>, failed_<reason>…
+        let outcome: String
+        let vehicleId: String?
+    }
 
     private var obdService: OBDCommandService?
     private var lastSkipTime: Date?
@@ -140,6 +150,7 @@ class MileageService: ObservableObject {
 
         isReading = false
         bleManager.disconnectAfterRead()
+        lastCaptureEnd = CaptureEndEvent(outcome: outcome.name, vehicleId: outcome.vehicleId)
         await logCaptureEnd(outcome, bleManager: bleManager, start: start)
         captureOffline = false
     }

@@ -65,11 +65,12 @@ struct CarSwitcherMenu: View {
         Button {
             vehicleStore.selectedVehicleId = car.id
         } label: {
-            let title = car.isActive ? car.displayName : "\(car.displayName) (Retired)"
             if car.id == vehicleStore.viewedVehicleId {
-                Label(title, systemImage: "checkmark")
+                Label(car.displayName, systemImage: "checkmark")
+            } else if !car.isActive {
+                Label(car.displayName, systemImage: "archivebox")
             } else {
-                Text(title)
+                Text(car.displayName)
             }
         }
     }
@@ -114,20 +115,34 @@ extension View {
     }
 }
 
-/// Shown on every tab while a retired car is being viewed: entries made now
-/// still go to that car.
+/// Shown under the title on every tab while a retired car is being viewed:
+/// entries made now still go to that car.
 struct RetiredCarBanner: View {
     let vehicle: Vehicle
 
     var body: some View {
-        Label("Retired — entries go to \(vehicle.displayName)", systemImage: "archivebox.fill")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.white)
+        HStack {
+            RetiredPill(name: vehicle.displayName)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+}
+
+/// Compact "Retired · <name>" capsule in system colors (fine in light and dark mode).
+struct RetiredPill: View {
+    let name: String
+
+    var body: some View {
+        Label("Retired · \(name)", systemImage: "archivebox")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
             .lineLimit(1)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 16)
-            .background(Color.orange)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Color(.secondarySystemFill), in: Capsule())
     }
 }
 
@@ -150,11 +165,12 @@ struct TargetCarSection: View {
     var body: some View {
         Section {
             let car = vehicleId.flatMap { vehicleStore.vehicle(id: $0) }
-            LabeledContent("Car", value: car?.displayName ?? "Unknown car")
-            if let car, !car.isActive {
-                Label("Retired — entries go to \(car.displayName)", systemImage: "archivebox.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+            LabeledContent("Car") {
+                if let car, !car.isActive {
+                    RetiredPill(name: car.displayName)
+                } else {
+                    Text(car?.displayName ?? "Unknown car")
+                }
             }
         }
     }
