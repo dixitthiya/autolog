@@ -253,7 +253,23 @@ struct DashboardView: View {
         Section(header: Text("Needs Attention")) {
             ForEach(attentionRows) { row in
                 DashboardRowView(row: row)
+                    .contextMenu { serviceRowMenu(row.serviceType) }
             }
+        }
+    }
+
+    /// Long-press menu shared by every service row on the Dashboard.
+    @ViewBuilder
+    private func serviceRowMenu(_ serviceType: String) -> some View {
+        Button {
+            intervalTarget = ServiceTypeTarget(serviceType: serviceType)
+        } label: {
+            Label("Edit interval", systemImage: "slider.horizontal.3")
+        }
+        Button {
+            historyTarget = ServiceTypeTarget(serviceType: serviceType)
+        } label: {
+            Label("View history", systemImage: "clock.arrow.circlepath")
         }
     }
 
@@ -262,6 +278,7 @@ struct DashboardView: View {
             Section(header: Text(category)) {
                 ForEach(rows) { row in
                     DashboardRowView(row: row)
+                        .contextMenu { serviceRowMenu(row.serviceType) }
                 }
             }
         }
@@ -279,18 +296,7 @@ struct DashboardView: View {
             } else {
                 ForEach(filteredTrackedItems) { item in
                     TrackedItemRowView(item: item)
-                        .contextMenu {
-                            Button {
-                                intervalTarget = ServiceTypeTarget(serviceType: item.serviceType)
-                            } label: {
-                                Label("Edit interval", systemImage: "slider.horizontal.3")
-                            }
-                            Button {
-                                historyTarget = ServiceTypeTarget(serviceType: item.serviceType)
-                            } label: {
-                                Label("View history", systemImage: "clock.arrow.circlepath")
-                            }
-                        }
+                        .contextMenu { serviceRowMenu(item.serviceType) }
                 }
             }
         }
