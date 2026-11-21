@@ -40,6 +40,8 @@ struct AddServiceView: View {
     var body: some View {
         NavigationStack {
             Form {
+                TargetCarSection(vehicleId: vehicleId)
+
                 Section("Service") {
                     Picker("Category", selection: $selectedCategory) {
                         ForEach(ServiceCategory.all, id: \.name) { cat in

@@ -6,6 +6,8 @@ struct MileageHistoryView: View {
     @State private var showAddSheet = false
     @State private var selectedRecord: MileageRecord?
     @State private var errorMessage: String?
+    /// The car the records on screen belong to.
+    @State private var loadedVehicleId: String?
     @ObservedObject private var vehicleStore = VehicleStore.shared
 
     var body: some View {
@@ -20,7 +22,9 @@ struct MileageHistoryView: View {
                 }
                 .refreshable { await loadRecords() }
                 .overlay {
-                    if records.isEmpty && !isLoading {
+                    if vehicleStore.viewedVehicleId == nil {
+                        NoCarSelectedView()
+                    } else if records.isEmpty && !isLoading {
                         ContentUnavailableView("No Mileage Records",
                             systemImage: "speedometer",
                             description: Text("Add your first mileage entry"))
@@ -38,6 +42,7 @@ struct MileageHistoryView: View {
                         Image(systemName: "plus.circle.fill")
                             .font(.title3)
                     }
+                    .disabled(vehicleStore.viewedVehicleId == nil)
                 }
             }
             .sheet(isPresented: $showAddSheet) {
@@ -51,20 +56,36 @@ struct MileageHistoryView: View {
                     toastMessage(msg)
                 }
             }
+            .carSwitcher()
+            .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await loadRecords() }
         }
     }
 
+    /// Drop the previous car's records so they are never shown under another car.
+    private func clearCarData() {
+        records = []
+        loadedVehicleId = vehicleStore.viewedVehicleId
+    }
+
     private func loadRecords() async {
-        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
+        guard let vehicleId = vehicleStore.viewedVehicleId else {
+            clearCarData()
+            return
+        }
+        if loadedVehicleId != vehicleId { clearCarData() }
         isLoading = true
         do {
-            records = try await NeonRepository.shared.getMileageRecords(vehicleId: vehicleId)
+            let loaded = try await NeonRepository.shared.getMileageRecords(vehicleId: vehicleId)
+            // The car was switched while this was loading: the result is for the wrong car.
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
+            records = loaded
         } catch is CancellationError {
             // Pull-to-refresh retracting cancels the in-flight request — not a real error.
         } catch let urlError as URLError where urlError.code == .cancelled {
             // Same: a cancelled URL request, don't surface it.
         } catch {
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
             errorMessage = error.localizedDescription
         }
         isLoading = false

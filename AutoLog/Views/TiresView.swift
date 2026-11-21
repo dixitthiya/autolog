@@ -10,22 +10,28 @@ struct TiresView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedTire: Tire?
+    /// The car the tires on screen belong to.
+    @State private var loadedVehicleId: String?
     @ObservedObject private var vehicleStore = VehicleStore.shared
 
     var body: some View {
         NavigationStack {
             ZStack {
-                ScrollView {
-                    VStack(spacing: 16) {
-                        odometerHeader
-                        cornerGrid
-                        pastTiresSection
-                        maintenanceHint
-                        emptyHint
+                if vehicleStore.viewedVehicleId == nil {
+                    NoCarSelectedView()
+                } else {
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            odometerHeader
+                            cornerGrid
+                            pastTiresSection
+                            maintenanceHint
+                            emptyHint
+                        }
+                        .padding()
                     }
-                    .padding()
+                    .refreshable { await load() }
                 }
-                .refreshable { await load() }
 
                 if isLoading && tires.isEmpty {
                     ProgressView()
@@ -38,6 +44,8 @@ struct TiresView: View {
             .overlay(alignment: .bottom) {
                 if let msg = errorMessage { TireToast(message: msg) { errorMessage = nil } }
             }
+            .carSwitcher()
+            .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await load() }
         }
     }
@@ -118,8 +126,20 @@ struct TiresView: View {
         }
     }
 
+    /// Drop the previous car's tires so they are never shown under another car.
+    private func clearCarData() {
+        tires = []
+        latestTread = [:]
+        currentOdometer = 0
+        loadedVehicleId = vehicleStore.viewedVehicleId
+    }
+
     private func load() async {
-        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
+        guard let vehicleId = vehicleStore.viewedVehicleId else {
+            clearCarData()
+            return
+        }
+        if loadedVehicleId != vehicleId { clearCarData() }
         isLoading = true
         do {
             async let tiresTask = NeonRepository.shared.getAllTires(vehicleId: vehicleId)
@@ -127,7 +147,10 @@ struct TiresView: View {
             async let treadTask = NeonRepository.shared.getLatestTreadReadingsByTire(vehicleId: vehicleId)
             let loadedTires = try await tiresTask
             let latest = try await mileageTask
-            latestTread = try await treadTask
+            let tread = try await treadTask
+            // The car was switched while this was loading: the result is for the wrong car.
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
+            latestTread = tread
             tires = loadedTires
             currentOdometer = latest?.odometerMiles ?? MileageService.shared.currentMileage(for: vehicleId)
         } catch is CancellationError {
@@ -135,6 +158,7 @@ struct TiresView: View {
         } catch let urlError as URLError where urlError.code == .cancelled {
             // Same: a cancelled URL request, don't surface it.
         } catch {
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
             errorMessage = error.localizedDescription
             if currentOdometer == 0 { currentOdometer = MileageService.shared.currentMileage(for: vehicleId) }
         }

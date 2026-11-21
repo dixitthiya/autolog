@@ -15,9 +15,9 @@ One row per car. The car is identified on every Bluetooth connect by reading its
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
 | id | TEXT | PK | UUID, or `vehicle-elantra-2013` for the Elantra |
-| nickname | TEXT | YES | Display name, e.g. "2018 Hyundai" |
+| nickname | TEXT | YES | Display name. Starts as "year make" from the VIN (e.g. "2018 Hyundai"); becomes "year make model" once NHTSA fills the model, unless the user changed it. Editable on the Vehicles screen |
 | make | TEXT | YES | Decoded offline from VIN chars 1-3 (WMI) |
-| model | TEXT | YES | Not decodable offline; edited later |
+| model | TEXT | YES | Not decodable offline. Filled once in the background from NHTSA vPIC when the car is created (only if empty), or by "Look up details" / typing it on the Vehicles screen |
 | year | INTEGER | YES | Decoded offline from VIN char 10 |
 | vin | TEXT | UNIQUE, YES | Uppercase, 17 chars `[A-HJ-NPR-Z0-9]` (CHECK). NULL for cars without one on file (Elantra) |
 | status | TEXT | NOT NULL, DEFAULT 'active' | `active` or `retired` (CHECK). Retired cars get no captures or reminders |
@@ -36,7 +36,7 @@ Daily odometer records — one per car per day, auto-logged via BLE or entered m
 | timestamp | TIMESTAMPTZ | NOT NULL | When the reading was taken |
 | odometer_miles | DOUBLE PRECISION | NOT NULL | Odometer reading in miles |
 | source | TEXT | NOT NULL | `BLE_AUTO`, `MANUAL`, or `IMPORTED` |
-| dist_since_codes_cleared | DOUBLE PRECISION | YES | PID 0131 value at time of capture |
+| dist_since_codes_cleared | DOUBLE PRECISION | YES | PID 0131 value at time of capture. For `MANUAL` rows, the baseline for later captures: stored only if the car's 0131 was read live within the last 10 minutes, otherwise NULL (the next capture then asks to confirm the odometer) |
 | synced_at | TIMESTAMPTZ | DEFAULT now() | When the record was synced to Neon |
 | created_at | TIMESTAMPTZ | DEFAULT now() | Row creation time |
 

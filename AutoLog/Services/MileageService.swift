@@ -548,6 +548,8 @@ class MileageService: ObservableObject {
         let vehicle = try await NeonRepository.shared.createVehicle(new, copyingThresholdsFrom: Vehicle.elantraId)
         Log.db("new vehicle: \(vehicle.displayName) (\(vin))")
         await VehicleStore.shared.reload()
+        // Model etc. from NHTSA, in the background; this capture never waits for it.
+        VehicleLookup.fillMissingDetailsInBackground(vehicleId: vehicle.id)
         requestManualEntry(for: vehicle.id)
         return vehicle
     }

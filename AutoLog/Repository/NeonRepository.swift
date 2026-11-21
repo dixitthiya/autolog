@@ -717,6 +717,34 @@ actor NeonRepository {
         try await executeNoResult("UPDATE vehicles SET status = $2 WHERE id = $1", params: [id, status.rawValue])
     }
 
+    /// Save the editable fields of a car (Vehicles screen). The VIN never changes.
+    func updateVehicle(_ vehicle: Vehicle) async throws {
+        try await executeNoResult("""
+            UPDATE vehicles SET nickname = $2, make = $3, model = $4, year = $5, status = $6 WHERE id = $1
+        """, params: [
+            vehicle.id, vehicle.nickname as Any, vehicle.make as Any, vehicle.model as Any,
+            vehicle.year as Any, vehicle.status.rawValue
+        ])
+    }
+
+    /// Fill only what is still empty, in the database itself, so a lookup that
+    /// finishes late can never overwrite something the user typed meanwhile.
+    /// The nickname is replaced only if it is empty or still `automaticNickname`.
+    func fillMissingVehicleDetails(id: String, make: String?, model: String?, year: Int?,
+                                   nickname: String?, replacingAutomaticNickname automaticNickname: String?) async throws {
+        try await executeNoResult("""
+            UPDATE vehicles SET
+                make     = COALESCE(NULLIF(make, ''), $2),
+                model    = COALESCE(NULLIF(model, ''), $3),
+                year     = COALESCE(year, $4),
+                nickname = CASE
+                    WHEN $5::text IS NOT NULL AND (nickname IS NULL OR nickname = '' OR nickname = $6::text) THEN $5::text
+                    ELSE nickname
+                END
+            WHERE id = $1
+        """, params: [id, make as Any, model as Any, year as Any, nickname as Any, automaticNickname as Any])
+    }
+
     private func parseVehicle(_ row: [String: Any]) -> Vehicle? {
         guard let id = parseString(row["id"]) else {
             Log.db("failed to parse vehicle: \(row)")

@@ -30,6 +30,8 @@ struct EditMileageView: View {
     var body: some View {
         NavigationStack {
             Form {
+                TargetCarSection(vehicleId: vehicleId)
+
                 Section("Details") {
                     DatePicker("Date", selection: $date, displayedComponents: [.date, .hourAndMinute])
                     TextField("Odometer (miles)", text: $odometerText)
@@ -40,11 +42,11 @@ struct EditMileageView: View {
                 if !isEditing {
                     Section {
                         if hasOBDBaseline {
-                            Label("OBD baseline available — auto-tracking will be enabled", systemImage: "checkmark.circle.fill")
+                            Label("Live OBD reading from this car — auto-tracking continues from this entry", systemImage: "checkmark.circle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.green)
                         } else {
-                            Label("Connect to OBD before saving to enable auto-tracking", systemImage: "exclamationmark.triangle.fill")
+                            Label("No OBD reading from this car in the last 10 minutes. The entry is saved without a baseline, and the next capture will ask you to confirm the odometer.", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
@@ -64,7 +66,7 @@ struct EditMileageView: View {
                     try? await Task.sleep(nanoseconds: 300_000_000)
                     odometerFocused = true
                     if let vehicleId {
-                        hasOBDBaseline = await getLatestDistSinceCleared(vehicleId: vehicleId) != nil
+                        hasOBDBaseline = liveDistSinceCleared(vehicleId: vehicleId) != nil
                     }
                 }
             }
@@ -117,9 +119,9 @@ struct EditMileageView: View {
                 )
                 try await NeonRepository.shared.updateMileageRecord(updated)
             } else {
-                // Capture this car's latest 0131 reading as baseline for this manual entry
-                let latestDist = await getLatestDistSinceCleared(vehicleId: vehicleId)
-                let newRecord = MileageRecord.manual(vehicleId: vehicleId, odometer: odometer, date: date, distSinceCodesCleared: latestDist)
+                // Baseline for this manual entry: this car's live 0131, or none
+                let liveDist = liveDistSinceCleared(vehicleId: vehicleId)
+                let newRecord = MileageRecord.manual(vehicleId: vehicleId, odometer: odometer, date: date, distSinceCodesCleared: liveDist)
                 try await NeonRepository.shared.saveMileageRecord(newRecord)
             }
             await onSave()
@@ -127,26 +129,21 @@ struct EditMileageView: View {
         } catch {
             errorMessage = error.localizedDescription
             if !isEditing {
-                let latestDist = await getLatestDistSinceCleared(vehicleId: vehicleId)
+                let liveDist = liveDistSinceCleared(vehicleId: vehicleId)
                 SyncManager.shared.queueMileageRecord(
-                    MileageRecord.manual(vehicleId: vehicleId, odometer: odometer, date: date, distSinceCodesCleared: latestDist)
+                    MileageRecord.manual(vehicleId: vehicleId, odometer: odometer, date: date, distSinceCodesCleared: liveDist)
                 )
             }
         }
         isSaving = false
     }
 
-    /// This car's 0131 baseline: the value read from it in the last few minutes
-    /// if there is one (effectively live), else the latest one logged for it.
-    private func getLatestDistSinceCleared(vehicleId: String) async -> Double? {
-        if let live = MileageService.shared.recentDistSinceCleared(for: vehicleId) {
-            return live
-        }
-        do {
-            return try await NeonRepository.shared.getOBDDistSinceCleared(vehicleId: vehicleId)
-        } catch {
-            return nil
-        }
+    /// This car's 0131 baseline: only a value read from it in the last 10 minutes.
+    /// An older logged value is never used — the car may have been driven since,
+    /// which would make every later odometer too high. With no baseline the
+    /// entry is saved without one, and the next capture asks to confirm the odometer.
+    private func liveDistSinceCleared(vehicleId: String) -> Double? {
+        MileageService.shared.recentDistSinceCleared(for: vehicleId)
     }
 
     private func delete() async {

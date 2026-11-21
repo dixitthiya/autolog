@@ -7,6 +7,8 @@ struct MaintenanceView: View {
     @State private var showAddSheet = false
     @State private var selectedRecord: ServiceRecord?
     @State private var errorMessage: String?
+    /// The car the records on screen belong to.
+    @State private var loadedVehicleId: String?
     @ObservedObject private var vehicleStore = VehicleStore.shared
 
     private let filters = ["All", "Brakes", "Tires", "Engine", "Cooling", "Transmission", "General"]
@@ -29,7 +31,9 @@ struct MaintenanceView: View {
                         }
                     }
                     .overlay {
-                        if filteredRecords.isEmpty && !isLoading {
+                        if vehicleStore.viewedVehicleId == nil {
+                            NoCarSelectedView()
+                        } else if filteredRecords.isEmpty && !isLoading {
                             ContentUnavailableView("No Service Records",
                                 systemImage: "wrench.and.screwdriver",
                                 description: Text("Add your first service entry"))
@@ -48,6 +52,7 @@ struct MaintenanceView: View {
                         Image(systemName: "plus.circle.fill")
                             .font(.title3)
                     }
+                    .disabled(vehicleStore.viewedVehicleId == nil)
                 }
             }
             .sheet(isPresented: $showAddSheet) {
@@ -73,6 +78,8 @@ struct MaintenanceView: View {
                         }
                 }
             }
+            .carSwitcher()
+            .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await loadRecords() }
         }
     }
@@ -98,12 +105,26 @@ struct MaintenanceView: View {
         .background(Color(.systemGroupedBackground))
     }
 
+    /// Drop the previous car's records so they are never shown under another car.
+    private func clearCarData() {
+        records = []
+        loadedVehicleId = vehicleStore.viewedVehicleId
+    }
+
     private func loadRecords() async {
-        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
+        guard let vehicleId = vehicleStore.viewedVehicleId else {
+            clearCarData()
+            return
+        }
+        if loadedVehicleId != vehicleId { clearCarData() }
         isLoading = true
         do {
-            records = try await NeonRepository.shared.getServiceRecords(vehicleId: vehicleId)
+            let loaded = try await NeonRepository.shared.getServiceRecords(vehicleId: vehicleId)
+            // The car was switched while this was loading: the result is for the wrong car.
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
+            records = loaded
         } catch {
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
             errorMessage = error.localizedDescription
         }
         isLoading = false

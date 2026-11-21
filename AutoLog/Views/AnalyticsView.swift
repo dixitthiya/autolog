@@ -10,6 +10,8 @@ struct AnalyticsView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedRotorDate: Date?
+    /// The car the charts on screen belong to.
+    @State private var loadedVehicleId: String?
     @ObservedObject private var vehicleStore = VehicleStore.shared
     @State private var selectedSpendMonth: String?
     @State private var spendScrubValue: String?
@@ -65,7 +67,9 @@ struct AnalyticsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    projectedServiceDates
+                    if vehicleStore.viewedVehicleId != nil {
+                        projectedServiceDates
+                    }
                     if !allDailyMiles.isEmpty || !monthlyMiles.isEmpty {
                         comboMileageChart
                     }
@@ -83,10 +87,14 @@ struct AnalyticsView: View {
             }
             .navigationTitle("Analytics")
             .overlay {
-                if isLoading {
+                if vehicleStore.viewedVehicleId == nil {
+                    NoCarSelectedView()
+                } else if isLoading {
                     ProgressView()
                 }
             }
+            .carSwitcher()
+            .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await loadData() }
         }
     }
@@ -1118,8 +1126,26 @@ struct AnalyticsView: View {
 
     // MARK: - Data Loading
 
+    /// Drop the previous car's data so its charts are never shown under another car.
+    private func clearCarData() {
+        serviceRecords = []
+        mileageRecords = []
+        thresholds = []
+        tires = []
+        treadReadings = []
+        selectedRotorDate = nil
+        selectedSpendMonth = nil
+        selectedComboDay = nil
+        selectedComboMonth = nil
+        loadedVehicleId = vehicleStore.viewedVehicleId
+    }
+
     private func loadData() async {
-        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
+        guard let vehicleId = vehicleStore.viewedVehicleId else {
+            clearCarData()
+            return
+        }
+        if loadedVehicleId != vehicleId { clearCarData() }
         isLoading = true
         do {
             async let sr = NeonRepository.shared.getServiceRecords(vehicleId: vehicleId)
@@ -1127,12 +1153,20 @@ struct AnalyticsView: View {
             async let th = NeonRepository.shared.getThresholds(vehicleId: vehicleId)
             async let ti = NeonRepository.shared.getActiveTires(vehicleId: vehicleId)
             async let tr = NeonRepository.shared.getAllTreadReadings(vehicleId: vehicleId)
-            serviceRecords = try await sr
-            mileageRecords = try await mr
-            thresholds = try await th
-            tires = try await ti
-            treadReadings = try await tr
+            let loadedServices = try await sr
+            let loadedMileage = try await mr
+            let loadedThresholds = try await th
+            let loadedTires = try await ti
+            let loadedTread = try await tr
+            // The car was switched while this was loading: the result is for the wrong car.
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
+            serviceRecords = loadedServices
+            mileageRecords = loadedMileage
+            thresholds = loadedThresholds
+            tires = loadedTires
+            treadReadings = loadedTread
         } catch {
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
             errorMessage = error.localizedDescription
         }
         isLoading = false

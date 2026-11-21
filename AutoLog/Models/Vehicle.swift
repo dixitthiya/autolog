@@ -31,6 +31,17 @@ struct Vehicle: Codable, Identifiable, Hashable {
         return vin ?? "Vehicle"
     }
 
+    /// The name a car gets automatically: "year make" (what `new` produces),
+    /// plus the model once it is known. Used to tell whether the nickname is
+    /// still the automatic one before replacing it.
+    static func autoNickname(make: String?, model: String? = nil, year: Int?) -> String? {
+        let name = [year.map(String.init), make, model]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return name.isEmpty ? nil : name
+    }
+
     /// A newly seen car, named from what can be decoded offline from its VIN.
     static func new(vin: String, make: String?, year: Int?) -> Vehicle {
         let name = [year.map(String.init), make].compactMap { $0 }.joined(separator: " ")

@@ -36,6 +36,23 @@ final class VehicleStore: ObservableObject {
     var viewedVehicleId: String? { viewedVehicle?.id }
 
     var activeVehicles: [Vehicle] { vehicles.filter { $0.isActive } }
+    var retiredVehicles: [Vehicle] { vehicles.filter { !$0.isActive } }
+
+    func vehicle(id: String) -> Vehicle? {
+        vehicles.first { $0.id == id }
+    }
+
+    /// After a car is edited or its status changes: refresh the list (which also
+    /// refreshes the offline car cache) and the reminders, which name the car
+    /// and skip retired cars.
+    func vehicleDidChange(_ vehicle: Vehicle) async {
+        VehicleCache.upsert(vehicle)
+        if let i = vehicles.firstIndex(where: { $0.id == vehicle.id }) {
+            vehicles[i] = vehicle
+        }
+        await reload()
+        await ServiceReminderScheduler.reschedule()
+    }
 
     func reload() async {
         do {

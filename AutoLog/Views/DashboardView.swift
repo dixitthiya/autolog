@@ -12,6 +12,8 @@ struct DashboardView: View {
     @State private var isLoading = false
     @State private var isOffline = false
     @State private var errorMessage: String?
+    /// The car the rows on screen belong to.
+    @State private var loadedVehicleId: String?
     @FocusState private var trackedSearchFocused: Bool
 
     var body: some View {
@@ -19,7 +21,11 @@ struct DashboardView: View {
             ZStack {
                 ScrollViewReader { proxy in
                     List {
-                        headerSection
+                        if vehicleStore.viewedVehicleId == nil {
+                            Section { NoCarSelectedView() }
+                        } else {
+                            headerSection
+                        }
                         if syncManager.pendingCount > 0 {
                             queueSection
                         }
@@ -73,6 +79,8 @@ struct DashboardView: View {
                     toastView(msg)
                 }
             }
+            .carSwitcher()
+            .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await loadDashboard() }
         }
     }
@@ -92,12 +100,6 @@ struct DashboardView: View {
                     .font(.system(size: 36, weight: .bold, design: .rounded))
                 if let car = vehicleStore.viewedVehicle {
                     Text(car.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let lastSync = mileageService.lastSyncDate {
-                    Text("Last BLE sync: \(lastSync.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -138,6 +140,11 @@ struct DashboardView: View {
                             .font(.caption)
                             .foregroundStyle(.green)
                     }
+                    if let lastSync = mileageService.lastSyncDate {
+                        Text("Last BLE sync: \(lastSync.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 if mileageService.isReading {
@@ -154,14 +161,15 @@ struct DashboardView: View {
                         await loadDashboard()
                     }
                 } label: {
-                    Label("Enter Odometer Reading", systemImage: "pencil.circle.fill")
+                    Label(manualEntryPromptTitle, systemImage: "pencil.circle.fill")
                         .font(.subheadline.bold())
                         .foregroundStyle(.orange)
                 }
             }
         } header: {
             HStack {
-                Text("OBD Auto-Capture")
+                Label(connectedCarTitle, systemImage: "antenna.radiowaves.left.and.right")
+                    .lineLimit(1)
                 Spacer()
                 Button {
                     guard !mileageService.isReading else { return }
@@ -173,7 +181,33 @@ struct DashboardView: View {
                 }
                 .disabled(mileageService.isReading)
             }
+        } footer: {
+            Text(captureFooter)
         }
+    }
+
+    /// The adapter's car, which is where captures go — not necessarily the car on screen.
+    private var connectedCarTitle: String {
+        guard let car = vehicleStore.connectedVehicle else { return "Connected: no car identified yet" }
+        return bleManager.connectionState == .disconnected
+            ? "Last connected: \(car.displayName)"
+            : "Connected: \(car.displayName)"
+    }
+
+    private var captureFooter: String {
+        if let connected = vehicleStore.connectedVehicle,
+           let viewed = vehicleStore.viewedVehicle,
+           connected.id != viewed.id {
+            return "Captures go to \(connected.displayName), the car the adapter is plugged into — not \(viewed.displayName), the car shown here."
+        }
+        return "Captures always go to the car the adapter is plugged into, identified by its VIN."
+    }
+
+    private var manualEntryPromptTitle: String {
+        guard let id = mileageService.manualEntryVehicleId, let car = vehicleStore.vehicle(id: id) else {
+            return "Enter Odometer Reading"
+        }
+        return "Enter Odometer Reading for \(car.displayName)"
     }
 
     private var bleStatusText: String {
@@ -322,13 +356,30 @@ struct DashboardView: View {
 
     // MARK: - Data
 
+    /// Drop the previous car's rows so they are never shown under another car.
+    private func clearCarData() {
+        dashboardRows = []
+        trackedItems = []
+        trackedSearch = ""
+        loadedVehicleId = vehicleStore.viewedVehicleId
+    }
+
     private func loadDashboard() async {
-        guard let vehicleId = vehicleStore.viewedVehicleId else { return }
+        guard let vehicleId = vehicleStore.viewedVehicleId else {
+            clearCarData()
+            return
+        }
+        if loadedVehicleId != vehicleId { clearCarData() }
         isLoading = true
         do {
-            dashboardRows = try await NeonRepository.shared.getDashboardData(vehicleId: vehicleId)
-            trackedItems = try await NeonRepository.shared.getTrackedItems(vehicleId: vehicleId)
-            if let latest = try await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId) {
+            let rows = try await NeonRepository.shared.getDashboardData(vehicleId: vehicleId)
+            let tracked = try await NeonRepository.shared.getTrackedItems(vehicleId: vehicleId)
+            let latest = try await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId)
+            // The car was switched while this was loading: the result is for the wrong car.
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
+            dashboardRows = rows
+            trackedItems = tracked
+            if let latest {
                 mileageService.setCurrentMileage(latest.odometerMiles, for: vehicleId)
             }
             isOffline = false
@@ -337,6 +388,7 @@ struct DashboardView: View {
         } catch let urlError as URLError where urlError.code == .cancelled {
             // Same: a cancelled URL request, don't flip offline or toast.
         } catch {
+            guard vehicleId == vehicleStore.viewedVehicleId else { return }
             isOffline = true
             errorMessage = error.localizedDescription
         }
