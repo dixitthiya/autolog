@@ -49,15 +49,18 @@ struct CarSwitcherMenu: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Image(systemName: "car.fill")
                 Text(vehicleStore.viewedVehicle?.displayName ?? "No car")
                     .lineLimit(1)
-                    .frame(maxWidth: 170, alignment: .leading)
                 Image(systemName: "chevron.down")
                     .font(.caption2.bold())
             }
             .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.accentColor.opacity(0.15), in: Capsule())
         }
     }
 
@@ -76,7 +79,7 @@ struct CarSwitcherMenu: View {
     }
 }
 
-/// Adds the car picker, the Vehicles sheet and the retired-car banner to a tab.
+/// Adds the car picker row (with the retired capsule) and the car-menu sheets to a tab.
 /// Apply to the content inside each tab's NavigationStack.
 struct CarSwitcherModifier: ViewModifier {
     @ObservedObject private var vehicleStore = VehicleStore.shared
@@ -84,15 +87,19 @@ struct CarSwitcherModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // One row directly under the navigation title: the car picker, and
+            // a "Retired" capsule beside it when the viewed car is retired.
             .safeAreaInset(edge: .top, spacing: 0) {
-                if let car = vehicleStore.viewedVehicle, !car.isActive {
-                    RetiredCarBanner(vehicle: car)
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                HStack(spacing: 8) {
                     CarSwitcherMenu(sheet: $sheet)
+                    if let car = vehicleStore.viewedVehicle, !car.isActive {
+                        RetiredPill()
+                    }
+                    Spacer(minLength: 0)
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(.bar)
             }
             .sheet(item: $sheet) { which in
                 switch which {
@@ -115,34 +122,16 @@ extension View {
     }
 }
 
-/// Shown under the title on every tab while a retired car is being viewed:
-/// entries made now still go to that car.
-struct RetiredCarBanner: View {
-    let vehicle: Vehicle
-
-    var body: some View {
-        HStack {
-            RetiredPill(name: vehicle.displayName)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(.bar)
-    }
-}
-
-/// Compact "Retired · <name>" capsule in system colors (fine in light and dark mode).
+/// Orange "Retired" capsule: shown beside the car picker and in add/edit sheets
+/// while the car is retired (entries still go to that car).
 struct RetiredPill: View {
-    let name: String
-
     var body: some View {
-        Label("Retired · \(name)", systemImage: "archivebox")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Color(.secondarySystemFill), in: Capsule())
+        Label("Retired", systemImage: "archivebox")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color.orange)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.orange.opacity(0.15), in: Capsule())
     }
 }
 
@@ -152,7 +141,7 @@ struct NoCarSelectedView: View {
         ContentUnavailableView(
             "No car selected",
             systemImage: "car",
-            description: Text("Pick a car from the menu at the top left. A car is added automatically the first time the OBD adapter reads its VIN.")
+            description: Text("Pick a car from the menu under the title. A car is added automatically the first time the OBD adapter reads its VIN.")
         )
     }
 }
@@ -167,7 +156,7 @@ struct TargetCarSection: View {
             let car = vehicleId.flatMap { vehicleStore.vehicle(id: $0) }
             LabeledContent("Car") {
                 if let car, !car.isActive {
-                    RetiredPill(name: car.displayName)
+                    RetiredPill()
                 } else {
                     Text(car?.displayName ?? "Unknown car")
                 }
