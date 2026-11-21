@@ -21,12 +21,13 @@ struct MaintenanceView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Fixed header: car picker above the filter bar
+                // Fixed header: car picker above the filter bar. 8 pt under the
+                // title; 8 pt here + the filter bar's own 8 pt = 16 pt to the chips.
                 CarSwitcherRow()
                     .padding(.horizontal, 16)
-                    .padding(.top, 6)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.systemGroupedBackground))
                 filterBar
                 ZStack {
                     List {

@@ -22,12 +22,12 @@ struct MileageHistoryView: View {
                     // Empty states are rows, so the car picker above stays visible
                     if vehicleStore.viewedVehicleId == nil {
                         NoCarSelectedView()
-                            .carSwitcherListRow()
+                            .emptyStateListRow()
                     } else if records.isEmpty && !isLoading {
                         ContentUnavailableView("No Mileage Records",
                             systemImage: "speedometer",
                             description: Text("Add your first mileage entry"))
-                            .carSwitcherListRow()
+                            .emptyStateListRow()
                     }
 
                     ForEach(records) { record in

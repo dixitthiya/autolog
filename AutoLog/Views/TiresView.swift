@@ -18,19 +18,25 @@ struct TiresView: View {
         NavigationStack {
             ZStack {
                 ScrollView {
-                    VStack(spacing: 16) {
+                    VStack(spacing: 0) {
+                        // 8 pt under the title, 16 pt above the content
                         CarSwitcherRow()
-                        if vehicleStore.viewedVehicleId == nil {
-                            NoCarSelectedView()
-                        } else {
-                            odometerHeader
-                            cornerGrid
-                            pastTiresSection
-                            maintenanceHint
-                            emptyHint
+                            .padding(.horizontal)
+                            .padding(.top, 8)
+                            .padding(.bottom, 16)
+                        VStack(spacing: 16) {
+                            if vehicleStore.viewedVehicleId == nil {
+                                NoCarSelectedView()
+                            } else {
+                                odometerHeader
+                                cornerGrid
+                                pastTiresSection
+                                maintenanceHint
+                                emptyHint
+                            }
                         }
+                        .padding([.horizontal, .bottom])
                     }
-                    .padding()
                 }
                 .refreshable { await load() }
 

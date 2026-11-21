@@ -66,27 +66,33 @@ struct AnalyticsView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 24) {
+                VStack(spacing: 0) {
+                    // 8 pt under the title, 16 pt above the content
                     CarSwitcherRow()
-                    if vehicleStore.viewedVehicleId == nil {
-                        NoCarSelectedView()
-                    } else {
-                        projectedServiceDates
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                        .padding(.bottom, 16)
+                    VStack(spacing: 24) {
+                        if vehicleStore.viewedVehicleId == nil {
+                            NoCarSelectedView()
+                        } else {
+                            projectedServiceDates
+                        }
+                        if !allDailyMiles.isEmpty || !monthlyMiles.isEmpty {
+                            comboMileageChart
+                        }
+                        if !monthlySpendData.isEmpty {
+                            monthlySpendChart
+                        }
+                        if !frontRotorData.isEmpty || !rearRotorData.isEmpty {
+                            rotorWearChart
+                        }
+                        if !treadSeries.isEmpty {
+                            tireTreadChart
+                        }
                     }
-                    if !allDailyMiles.isEmpty || !monthlyMiles.isEmpty {
-                        comboMileageChart
-                    }
-                    if !monthlySpendData.isEmpty {
-                        monthlySpendChart
-                    }
-                    if !frontRotorData.isEmpty || !rearRotorData.isEmpty {
-                        rotorWearChart
-                    }
-                    if !treadSeries.isEmpty {
-                        tireTreadChart
-                    }
+                    .padding([.horizontal, .bottom])
                 }
-                .padding()
             }
             .navigationTitle("Analytics")
             .overlay {
