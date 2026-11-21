@@ -136,7 +136,7 @@ Raw OBD event log — every PID read, init, failure, and skip is recorded here f
 | id | TEXT | PK | UUID |
 | vehicle_id | TEXT | YES, FK | Car connected. NULL = car not known yet/at all (init, failed VIN read) — never assume a car for NULL |
 | timestamp | TIMESTAMPTZ | NOT NULL | When the event occurred |
-| event_type | TEXT | NOT NULL | e.g. `init`, `vin_read`, `rpm_check`, `odometer_read`, `dist_since_clear`, `skipped_engine_off`, `mileage_save`, `sanity_check_failed`, `connection_error`, `codes_cleared_detected`, `retired_vehicle_connected`, `unassigned_saved`, `unassigned_skipped`, `schema_not_ready`, `capture_end` |
+| event_type | TEXT | NOT NULL | e.g. `init`, `vin_read`, `rpm_check`, `odometer_read`, `dist_since_clear`, `skipped_engine_off`, `mileage_save`, `sanity_check_failed`, `connection_error`, `codes_cleared_detected`, `retired_vehicle_connected`, `unassigned_saved`, `unassigned_skipped`, `schema_not_ready`, `capture_end`, `replay_rejected` |
 | pid | TEXT | YES | OBD PID involved (e.g. `010C`, `01A6`, `0131`, `0902`) |
 | raw_response | TEXT | YES | Raw ELM327 response string. For `capture_end`: `mode=<capture_mode>;app_state=<active\|inactive\|background>;trigger=<…>` |
 | parsed_value | DOUBLE PRECISION | YES | Parsed numeric value (odometer for `capture_end`) |
@@ -148,7 +148,24 @@ Index: `(vehicle_id, event_type, timestamp DESC)`.
 
 **Retries.** `0902`, `010C` and `0131` are retried once (after 250 ms) on a transient bus error (`CAN ERROR`, `BUS ERROR`, `BUS BUSY`, `STOPPED`); `0902` also on a timeout. `01A6` is never retried. Each attempt is its own row: a transient attempt's `error_message` is `transient: CAN ERROR`, a retried one ends `— retrying`, and when a retry happened each row ends `(attempt n/2)`.
 
-**`capture_end`** — exactly one per connect. `error_message` is one of: `saved`, `updated`, `skipped_already_reading`, `skipped_throttled`, `skipped_schema_not_ready`, `skipped_retired_vehicle`, `skipped_engine_off`, `skipped_vehicle_unknown` (reading kept in `unassigned_readings`), `skipped_vehicle_unknown_no_data`, `skipped_needs_manual_odometer`, `skipped_sanity_check`, `failed_init`, `failed_update`, `failed_save_queued`, `failed_exception`. `success` is true only for `saved` / `updated`. `trigger` is what started the connect: `app_launch`, `loop`, `fg_resume`, `throttle`, `dashboard_button`, `power_on`, `restore`, `pending` (iOS connected with no request in flight), or `pending:<trigger>:age=<n>s` (a request iOS completed long after it was made).
+**`capture_end`** — exactly one per connect. `error_message` is one of: `saved`, `updated`, `skipped_already_reading`, `skipped_throttled`, `skipped_schema_not_ready`, `skipped_retired_vehicle`, `skipped_engine_off`, `skipped_vehicle_unknown` (reading kept in `unassigned_readings`), `skipped_vehicle_unknown_no_data`, `skipped_needs_manual_odometer`, `skipped_sanity_check`, `queued_offline`, `queued_offline_update`, `queued_offline_save` (database unreachable; the raw reading is in the offline queue, see below), `skipped_offline_no_reading`, `failed_init`, `failed_update`, `failed_save_queued`, `failed_exception`. `success` is true only for `saved` / `updated`. `trigger` is what started the connect: `app_launch`, `loop`, `fg_resume`, `throttle`, `dashboard_button`, `power_on`, `restore`, `pending` (iOS connected with no request in flight), or `pending:<trigger>:age=<n>s` (a request iOS completed long after it was made).
+
+**Offline rows.** While offline only `capture_end` is queued, so these rows can arrive late: their `timestamp` is when the capture ended, not when they were written. Other per-command rows (`init`, `vin_read`, `rpm_check`, …) are not written for an offline capture.
+
+**`replay_rejected`** — written when a queued offline capture could not become a mileage row and was dropped from the queue. `vehicle_id` is the car it was captured under; `parsed_value` is the 0131 value; `error_message` is `<reason>: <detail>` with reason `no_manual_reference`, `negative_delta` (codes cleared), `reference_missing_0131`, `no_0131_reading` or `sanity_check` (computed odometer more than 1.5 mi below the car's last record at capture time); `raw_response` is `capture_ts=<ISO 8601> mode=<capture_mode> rpm=<n> dist=<0131> dist_raw=<raw reply> odometer_raw=<raw reply>`, enough to re-enter the reading by hand. Its `timestamp` is the replay time.
+
+---
+
+### Offline queue (on the phone, not in Neon)
+
+`UserDefaults["pendingRecords"]` — JSON array replayed in order by `SyncManager.syncAll()` on foreground, when the network returns, and after each online capture. Old queues still decode (every added field is optional); a record this build can't read is skipped, not fatal. Each record has a `queueId`, a `retryCount` and a `lastError`. Types: `mileage`, `service`, `unassigned` (as before; records without a car are the Elantra's), plus:
+
+- `capture` — a raw reading taken while the database was unreachable: car id (from the VIN at capture time, never from replay time), timestamp, 0131, 01A6 if reported, rpm. On replay the odometer is computed with the same math as a live capture (`MileageMath`) from the car's history *as of the capture time*, then the car's BLE_AUTO row for the capture's *day* is updated or inserted (an existing newer row is left alone). One queued capture per car per day. Rejected captures are logged (`replay_rejected`) and dropped.
+- `log` — a queued `capture_end` row. At most 25 are kept, oldest dropped first; data records are never dropped to make room.
+
+Offline failures don't count as retries. A record stops being retried after `Config.maxRetryCount` failures that are not network errors, and stays visible in the "waiting to sync" list.
+
+Also on the phone: `multiCarMigrationConfirmed` (set once `multi_car_v1` is confirmed, together with a hash of the database host/name so a different database isn't trusted) and `cachedVehicles` (the car list as last fetched, used to identify a known car by VIN offline; a car is never created offline).
 
 ---
 
@@ -160,7 +177,7 @@ Captures whose car could not be identified (VIN read failed). Never guessed into
 |--------|------|----------|-------------|
 | id | TEXT | PK | UUID |
 | timestamp | TIMESTAMPTZ | NOT NULL | When the reading was taken |
-| failure_reason | TEXT | NOT NULL | `vin_timeout` (no reply, after retry), `vin_no_data` (a clean NO DATA), `vin_error` (bus error after retry, or other adapter error), `vin_invalid` (reply isn't a valid VIN), `vin_lookup_error` (VIN read but DB lookup failed) |
+| failure_reason | TEXT | NOT NULL | `vin_timeout` (no reply, after retry), `vin_no_data` (a clean NO DATA), `vin_error` (bus error after retry, or other adapter error), `vin_invalid` (reply isn't a valid VIN), `vin_lookup_error` (VIN read but DB lookup failed), `vin_unknown_offline` (no network and the VIN is not in the saved car list; the VIN is in `vin_raw_response`) |
 | vin_raw_response | TEXT | YES | Raw 0902 reply; both replies joined with ` \| ` if it was retried |
 | peripheral_id | TEXT | YES | Adapter's Bluetooth identifier |
 | capture_mode | TEXT | YES | Same values as `mileage_snapshots.capture_mode` |

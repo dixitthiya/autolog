@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 actor NeonRepository {
     static let shared = NeonRepository()
@@ -10,15 +11,39 @@ actor NeonRepository {
         return f
     }()
 
-    /// True once the multi_car_v1 migration is confirmed in this launch. Until
-    /// then captures are blocked and reads treat a NULL vehicle_id as the Elantra.
-    private(set) var isMultiCarReady = false
+    /// True once the multi_car_v1 migration is confirmed. Until then captures
+    /// are blocked and reads treat a NULL vehicle_id as the Elantra. The
+    /// confirmation is remembered across launches (the marker is never removed),
+    /// so a launch with no network still knows the database is migrated.
+    private(set) var isMultiCarReady: Bool
+
+    private static let confirmedKey = "multiCarMigrationConfirmed"
+
+    /// Identifies which database the confirmation was for: a hash of host and
+    /// database name (credentials excluded), so pointing the app at a different
+    /// database never trusts a stale flag. Never logged.
+    private static func databaseFingerprint() -> String {
+        let target = Config.neonConnectionString.split(separator: "@").last.map(String.init) ?? Config.neonBaseURL
+        return SHA256.hash(data: Data(target.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private var schemaTask: Task<Void, Error>?
 
     private init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = Config.urlSessionTimeout
         config.timeoutIntervalForResource = Config.urlSessionTimeout
         self.session = URLSession(configuration: config)
+        self.isMultiCarReady = UserDefaults.standard.string(forKey: Self.confirmedKey) == Self.databaseFingerprint()
+    }
+
+    /// If the migration was never confirmed, run the (idempotent) schema init
+    /// again. Called on foreground, when the network returns, and before a
+    /// capture, so one failed launch doesn't block captures for the session.
+    /// Throws the underlying error so callers can tell "offline" from "failed".
+    func ensureMultiCarReady() async throws {
+        guard !isMultiCarReady else { return }
+        try await initializeSchema()
     }
 
     /// WHERE fragment matching one vehicle's rows (`$param` = vehicle id).
@@ -106,7 +131,19 @@ actor NeonRepository {
 
     // MARK: - Schema Init
 
+    /// One run at a time: a launch init and an `ensureMultiCarReady` retry that
+    /// overlap share the same run.
     func initializeSchema() async throws {
+        if let running = schemaTask {
+            return try await running.value
+        }
+        let task = Task { try await self.performSchemaInit() }
+        schemaTask = task
+        defer { schemaTask = nil }
+        try await task.value
+    }
+
+    private func performSchemaInit() async throws {
         Log.db("initializing schema")
 
         try await executeNoResult("""
@@ -420,6 +457,9 @@ actor NeonRepository {
 
         let done = try await execute("SELECT 1 AS ok FROM schema_migrations WHERE name = 'multi_car_v1'")
         isMultiCarReady = !done.isEmpty
+        if isMultiCarReady {
+            UserDefaults.standard.set(Self.databaseFingerprint(), forKey: Self.confirmedKey)
+        }
         Log.db("multi-car migration \(isMultiCarReady ? "confirmed" : "NOT confirmed")")
     }
 
@@ -795,6 +835,31 @@ actor NeonRepository {
         return nil
     }
 
+    /// This car's BLE_AUTO record on the local calendar day of `date` (bounds are
+    /// computed in Swift, like `getTodayBLEAutoRecord`). Used when replaying an
+    /// offline capture, which belongs to the day it was taken, not the day it syncs.
+    func getBLEAutoRecord(vehicleId: String, onDayOf date: Date) async throws -> MileageRecord? {
+        let start = Calendar.current.startOfDay(for: date)
+        guard let end = Calendar.current.date(byAdding: .day, value: 1, to: start) else { return nil }
+        let rows = try await execute("""
+            SELECT \(mileageColumns) FROM mileage_records
+            WHERE source = 'BLE_AUTO' AND \(vehicleFilter(1)) AND timestamp >= $2 AND timestamp < $3
+            ORDER BY timestamp DESC LIMIT 1
+        """, params: [vehicleId, start, end])
+        return rows.first.flatMap { parseMileageRecord($0) }
+    }
+
+    /// This car's latest record taken at or before `date` — what the car's
+    /// history looked like when an offline capture was taken.
+    func getLatestMileageRecord(vehicleId: String, onOrBefore date: Date) async throws -> MileageRecord? {
+        let rows = try await execute("""
+            SELECT \(mileageColumns) FROM mileage_records
+            WHERE \(vehicleFilter(1)) AND timestamp <= $2
+            ORDER BY timestamp DESC LIMIT 1
+        """, params: [vehicleId, date])
+        return rows.first.flatMap { parseMileageRecord($0) }
+    }
+
     func getLatestMileageRecord(vehicleId: String) async throws -> MileageRecord? {
         let rows = try await execute("""
             SELECT \(mileageColumns) FROM mileage_records
@@ -864,13 +929,14 @@ actor NeonRepository {
 
     // MARK: - OBD Connection Logs
 
-    func saveMileageSnapshot(vehicleId: String, odometer: Double, distSinceCodesCleared: Double?, rpm: Int?, captureMode: String) async {
+    func saveMileageSnapshot(vehicleId: String, odometer: Double, distSinceCodesCleared: Double?, rpm: Int?, captureMode: String,
+                             timestamp: Date = Date()) async {
         do {
             try await executeNoResult("""
                 INSERT INTO mileage_snapshots (id, timestamp, odometer_miles, dist_since_codes_cleared, rpm, capture_mode, vehicle_id)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
             """, params: [
-                UUID().uuidString, Date(), odometer,
+                UUID().uuidString, timestamp, odometer,
                 distSinceCodesCleared as Any, rpm as Any, captureMode, vehicleId
             ])
             // Purge old snapshots (keep 7 days)
@@ -886,18 +952,29 @@ actor NeonRepository {
     /// (nil only before the VIN is known).
     func logOBDEvent(vehicleId: String?, eventType: String, pid: String?, rawResponse: String?,
                      parsedValue: Double?, success: Bool, errorMessage: String?, durationMs: Int?) async {
+        let entry = OBDLogEntry(
+            id: UUID().uuidString, timestamp: Date(), vehicleId: vehicleId, eventType: eventType, pid: pid,
+            rawResponse: rawResponse, parsedValue: parsedValue, success: success,
+            errorMessage: errorMessage, durationMs: durationMs)
         do {
-            try await executeNoResult("""
-                INSERT INTO obd_connection_logs (id, timestamp, event_type, pid, raw_response, parsed_value, success, error_message, vehicle_id, duration_ms)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            """, params: [
-                UUID().uuidString, Date(), eventType,
-                pid as Any, rawResponse as Any, parsedValue as Any,
-                success, errorMessage as Any, vehicleId as Any, durationMs as Any
-            ])
+            try await writeOBDEvent(entry)
         } catch {
             Log.db("failed to log OBD event: \(error.localizedDescription)")
         }
+    }
+
+    /// Writes one log row and reports failure, for callers that queue what
+    /// couldn't be written. Idempotent on `entry.id`.
+    func writeOBDEvent(_ entry: OBDLogEntry) async throws {
+        try await executeNoResult("""
+            INSERT INTO obd_connection_logs (id, timestamp, event_type, pid, raw_response, parsed_value, success, error_message, vehicle_id, duration_ms)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (id) DO NOTHING
+        """, params: [
+            entry.id, entry.timestamp, entry.eventType,
+            entry.pid as Any, entry.rawResponse as Any, entry.parsedValue as Any,
+            entry.success, entry.errorMessage as Any, entry.vehicleId as Any, entry.durationMs as Any
+        ])
     }
 
     /// Latest successful 0131 value logged for this car. Strict match: a log

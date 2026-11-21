@@ -22,6 +22,7 @@ struct AutoLogApp: App {
             .task {
                 guard !isInitialized else { return }
                 isInitialized = true
+                NetworkMonitor.shared.start()
                 await initialize()
                 // Start background auto-scan cycle
                 bleManager.startAutoScanCycle()
@@ -35,6 +36,13 @@ struct AutoLogApp: App {
             }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
                 Task {
+                    // If the migration was never confirmed (a launch with no
+                    // network), confirm it now instead of waiting for a relaunch.
+                    if NetworkMonitor.shared.isOnline {
+                        let wasReady = await NeonRepository.shared.isMultiCarReady
+                        try? await NeonRepository.shared.ensureMultiCarReady()
+                        if !wasReady { await VehicleStore.shared.reload() }
+                    }
                     await syncManager.syncAll()
                     // Clear throttle on foreground — always try fresh
                     mileageService.clearSkipThrottle()

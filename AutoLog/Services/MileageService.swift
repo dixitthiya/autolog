@@ -33,6 +33,12 @@ class MileageService: ObservableObject {
     private var cachedVehicle: (vehicle: Vehicle, at: Date)?
     /// Last 0131 value read per car in this app session.
     private var liveDistSinceCleared: [String: (miles: Double, at: Date)] = [:]
+    /// Set for the connect in progress once the database is known to be
+    /// unreachable (path says offline, or a call failed with a network error).
+    /// From then on nothing else waits on the network; the reading is queued.
+    private var captureOffline = false
+
+    private static let offlineStatus = "Offline — reading will sync later"
 
     private init() {
         // Carry the old single cached value over to the Elantra, which owned it.
@@ -95,6 +101,10 @@ class MileageService: ObservableObject {
         static func failed(_ reason: String, _ vehicleId: String?, odometer: Double? = nil) -> CaptureOutcome {
             CaptureOutcome(name: "failed_\(reason)", vehicleId: vehicleId, odometer: odometer)
         }
+        /// Reading kept in the offline queue; it becomes a row when it syncs.
+        static func queued(_ reason: String, _ vehicleId: String?) -> CaptureOutcome {
+            CaptureOutcome(name: "queued_\(reason)", vehicleId: vehicleId)
+        }
     }
 
     /// Quick read: connect, identify the car, read PIDs, save, disconnect (~10 seconds)
@@ -116,6 +126,7 @@ class MileageService: ObservableObject {
 
         isReading = true
         obdStatus = "Reading data..."
+        captureOffline = !NetworkMonitor.shared.isOnline
 
         // Captures while the app is in the background (iOS reconnect, state
         // restore) are bg_auto; throttle retries keep their tag. A briefly
@@ -129,14 +140,25 @@ class MileageService: ObservableObject {
         isReading = false
         bleManager.disconnectAfterRead()
         await logCaptureEnd(outcome, bleManager: bleManager, start: start)
+        captureOffline = false
     }
 
     /// The capture itself. Every exit returns an outcome, so the compiler
     /// guarantees each connect is accounted for in obd_connection_logs.
     private func runCapture(bleManager: BLEManager, captureMode: String) async -> CaptureOutcome {
         // No safe car to save under until the multi-car migration is confirmed.
+        // The confirmation is remembered across launches, so this holds offline;
+        // if it was never confirmed, try again now rather than waiting for a relaunch.
+        let alreadyConfirmed = await NeonRepository.shared.isMultiCarReady
+        if !alreadyConfirmed && !captureOffline {
+            do {
+                try await NeonRepository.shared.ensureMultiCarReady()
+            } catch {
+                if NetworkMonitor.isOfflineError(error) { captureOffline = true }
+            }
+        }
         guard await NeonRepository.shared.isMultiCarReady else {
-            obdStatus = "Database not ready — skipped"
+            obdStatus = captureOffline ? Self.offlineStatus : "Database not ready — skipped"
             await logEvent(nil, "schema_not_ready", success: false, error: "multi-car migration not confirmed")
             return .skipped("schema_not_ready", nil)
         }
@@ -211,6 +233,8 @@ class MileageService: ObservableObject {
                 await logEvent(connectedId, "odometer_read", pid: "01A6", success: false,
                           error: error.localizedDescription, duration: Self.ms(since: odoStart))
             }
+            // What the car itself reported, before any calculation (kept if the reading is queued)
+            let reportedOdometer: Double? = odometer > 0 ? odometer : nil
 
             // Read distance since codes cleared (PID 0131), one retry on a transient bus error
             obdStatus = "Reading distance..."
@@ -248,117 +272,146 @@ class MileageService: ObservableObject {
                 liveDistSinceCleared[vehicleId] = (distSinceCleared, Date())
             }
 
-            // Calculate mileage
-            var promptManualEntry = false
-            if odometer == 0 {
-                let (calc, shouldPrompt) = try await calculateMileage(vehicleId: vehicleId, currentDistSinceCleared: distSinceCleared)
-                odometer = calc
-                promptManualEntry = shouldPrompt
+            // Database unreachable: keep the raw reading under this car. Its odometer
+            // is worked out when it syncs, from the car's history at that point.
+            func queueRaw(_ reason: String) -> CaptureOutcome {
+                queueOfflineCapture(vehicle: vehicle, captureMode: captureMode, rpm: rpmReadSuccess ? rpm : nil,
+                                    odometer: reportedOdometer, odometerRaw: odometerRaw,
+                                    dist: distSinceCleared, distRaw: distRaw, reason: reason)
+            }
+            if captureOffline {
+                return queueRaw("offline")
             }
 
-            guard odometer > 0 else {
-                obdStatus = "Enter odometer manually"
-                requestManualEntry(for: vehicleId)
-                return .skipped("needs_manual_odometer", vehicleId)
-            }
-
-            // Sanity check: reject if odometer drops more than 1.5 miles from this car's last known value
-            // CAN filter (ATCRA7E8) should prevent ghost values; this is a safety net.
-            if let lastRecord = try await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId),
-               lastRecord.odometerMiles > 0,
-               odometer < lastRecord.odometerMiles - 1.5 {
-                // Retry once after 2s
-                obdStatus = "Verifying reading..."
-                try await Task.sleep(nanoseconds: 2_000_000_000)
-                var retryDist: Double?
-                do {
-                    let retryRaw = try await obd.sendCommand("0131")
-                    let retryMiles = PIDParser.parseDistanceSinceCodesCleared(retryRaw)
-                    retryDist = retryMiles > 0 ? retryMiles : nil
-                } catch { /* retry failed, use original */ }
-
-                var retryOdometer = odometer
-                if retryDist != nil {
-                    let (calc, shouldPrompt) = try await calculateMileage(vehicleId: vehicleId, currentDistSinceCleared: retryDist)
-                    retryOdometer = calc
+            do {
+                // Calculate mileage
+                var promptManualEntry = false
+                if odometer == 0 {
+                    let (calc, shouldPrompt) = try await calculateMileage(vehicleId: vehicleId, currentDistSinceCleared: distSinceCleared)
+                    odometer = calc
                     promptManualEntry = shouldPrompt
                 }
 
-                if retryOdometer < lastRecord.odometerMiles - 1.5 {
-                    obdStatus = "Bad reading — skipped"
+                guard odometer > 0 else {
+                    obdStatus = "Enter odometer manually"
                     requestManualEntry(for: vehicleId)
-                    await logEvent(vehicleId, "sanity_check_failed", value: retryOdometer, success: false,
-                              error: "Odometer dropped after retry: \(Int(retryOdometer)) < last \(Int(lastRecord.odometerMiles))")
-                    return .skipped("sanity_check", vehicleId, odometer: retryOdometer)
+                    return .skipped("needs_manual_odometer", vehicleId)
                 }
-                // Retry succeeded — use the better value
-                odometer = retryOdometer
-                distSinceCleared = retryDist ?? distSinceCleared
-            }
 
-            // Save or update this car's BLE_AUTO record for today (never overwrite MANUAL entries)
-            let todayBLERecord = try await NeonRepository.shared.getTodayBLEAutoRecord(vehicleId: vehicleId)
-            let record = MileageRecord.bleAuto(vehicleId: vehicleId, odometer: odometer, distSinceCodesCleared: distSinceCleared)
-            let outcome: CaptureOutcome
+                // Sanity check: reject if odometer drops more than 1.5 miles from this car's last known value
+                // CAN filter (ATCRA7E8) should prevent ghost values; this is a safety net.
+                if let lastRecord = try await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId),
+                   lastRecord.odometerMiles > 0,
+                   odometer < lastRecord.odometerMiles - 1.5 {
+                    // Retry once after 2s
+                    obdStatus = "Verifying reading..."
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                    var retryDist: Double?
+                    do {
+                        let retryRaw = try await obd.sendCommand("0131")
+                        let retryMiles = PIDParser.parseDistanceSinceCodesCleared(retryRaw)
+                        retryDist = retryMiles > 0 ? retryMiles : nil
+                    } catch { /* retry failed, use original */ }
 
-            if let existing = todayBLERecord {
-                // Update today's BLE_AUTO record with latest reading
-                let updated = MileageRecord(
-                    id: existing.id,
-                    vehicleId: vehicleId,
-                    timestamp: Date(),
-                    odometerMiles: odometer,
-                    source: "BLE_AUTO",
-                    // Keep the earlier good 0131 if this capture's read failed
-                    distSinceCodesCleared: distSinceCleared ?? existing.distSinceCodesCleared
-                )
-                do {
-                    try await NeonRepository.shared.updateMileageRecord(updated)
-                    Log.db("updated today's BLE mileage: \(Int(odometer)) miles")
-                    outcome = .updated(vehicleId, odometer)
-                } catch {
-                    Log.db("failed to update: \(error.localizedDescription)")
-                    outcome = .failed("update", vehicleId, odometer: odometer)
+                    var retryOdometer = odometer
+                    if retryDist != nil {
+                        let (calc, shouldPrompt) = try await calculateMileage(vehicleId: vehicleId, currentDistSinceCleared: retryDist)
+                        retryOdometer = calc
+                        promptManualEntry = shouldPrompt
+                    }
+
+                    if retryOdometer < lastRecord.odometerMiles - 1.5 {
+                        obdStatus = "Bad reading — skipped"
+                        requestManualEntry(for: vehicleId)
+                        await logEvent(vehicleId, "sanity_check_failed", value: retryOdometer, success: false,
+                                  error: "Odometer dropped after retry: \(Int(retryOdometer)) < last \(Int(lastRecord.odometerMiles))")
+                        return .skipped("sanity_check", vehicleId, odometer: retryOdometer)
+                    }
+                    // Retry succeeded — use the better value
+                    odometer = retryOdometer
+                    distSinceCleared = retryDist ?? distSinceCleared
                 }
-            } else {
-                do {
-                    try await NeonRepository.shared.saveMileageRecord(record)
-                    Log.db("mileage record saved: \(Int(odometer)) miles")
-                    await logEvent(vehicleId, "mileage_save", value: odometer, success: true)
-                    outcome = .saved(vehicleId, odometer)
-                } catch {
-                    SyncManager.shared.queueMileageRecord(record)
-                    await logEvent(vehicleId, "mileage_save", value: odometer, success: false,
-                              error: "Queued: \(error.localizedDescription)")
-                    outcome = .failed("save_queued", vehicleId, odometer: odometer)
+
+                // Save or update this car's BLE_AUTO record for today (never overwrite MANUAL entries)
+                let todayBLERecord = try await NeonRepository.shared.getTodayBLEAutoRecord(vehicleId: vehicleId)
+                let record = MileageRecord.bleAuto(vehicleId: vehicleId, odometer: odometer, distSinceCodesCleared: distSinceCleared)
+                let outcome: CaptureOutcome
+
+                if let existing = todayBLERecord {
+                    // Update today's BLE_AUTO record with latest reading
+                    let updated = MileageRecord(
+                        id: existing.id,
+                        vehicleId: vehicleId,
+                        timestamp: Date(),
+                        odometerMiles: odometer,
+                        source: "BLE_AUTO",
+                        // Keep the earlier good 0131 if this capture's read failed
+                        distSinceCodesCleared: distSinceCleared ?? existing.distSinceCodesCleared
+                    )
+                    do {
+                        try await NeonRepository.shared.updateMileageRecord(updated)
+                        Log.db("updated today's BLE mileage: \(Int(odometer)) miles")
+                        outcome = .updated(vehicleId, odometer)
+                    } catch {
+                        Log.db("failed to update: \(error.localizedDescription)")
+                        if NetworkMonitor.isOfflineError(error) {
+                            captureOffline = true
+                            return queueRaw("offline_update")
+                        }
+                        outcome = .failed("update", vehicleId, odometer: odometer)
+                    }
+                } else {
+                    do {
+                        try await NeonRepository.shared.saveMileageRecord(record)
+                        Log.db("mileage record saved: \(Int(odometer)) miles")
+                        await logEvent(vehicleId, "mileage_save", value: odometer, success: true)
+                        outcome = .saved(vehicleId, odometer)
+                    } catch {
+                        if NetworkMonitor.isOfflineError(error) {
+                            // Queue the raw reading, not a finished row: replay then keeps
+                            // one BLE_AUTO row per day even if another capture lands first.
+                            captureOffline = true
+                            return queueRaw("offline_save")
+                        }
+                        SyncManager.shared.queueMileageRecord(record)
+                        await logEvent(vehicleId, "mileage_save", value: odometer, success: false,
+                                  error: "Queued: \(error.localizedDescription)")
+                        outcome = .failed("save_queued", vehicleId, odometer: odometer)
+                    }
                 }
+
+                // Save snapshot for every capture (auto-purges after 7 days)
+                await NeonRepository.shared.saveMileageSnapshot(
+                    vehicleId: vehicleId, odometer: odometer, distSinceCodesCleared: distSinceCleared, rpm: rpm,
+                    captureMode: captureMode)
+
+                setCurrentMileage(odometer, for: vehicleId)
+                lastSyncDate = Date()
+                if promptManualEntry {
+                    requestManualEntry(for: vehicleId)
+                } else if manualEntryVehicleId == vehicleId {
+                    needsManualEntry = false
+                    manualEntryVehicleId = nil
+                }
+                clearSkipThrottle()
+                let timeStr = Date().formatted(date: .omitted, time: .standard)
+                obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
+                lastCaptureInfo = "\(vehicle.displayName): \(Int(odometer)) mi at \(timeStr)"
+
+                // Send silent notification so user knows data was captured
+                await sendCaptureNotification(odometer: odometer, vehicle: vehicle)
+
+                await checkStatusNotifications(vehicle: vehicle)
+                await ServiceReminderScheduler.reschedule()
+                await SyncManager.shared.syncAll()
+                return outcome
+            } catch where NetworkMonitor.isOfflineError(error) {
+                // Every call above is a read made before anything is written, so
+                // the capture can be queued whole.
+                captureOffline = true
+                Log.db("offline mid-capture: \(error.localizedDescription)")
+                return queueRaw("offline")
             }
-
-            // Save snapshot for every capture (auto-purges after 7 days)
-            await NeonRepository.shared.saveMileageSnapshot(
-                vehicleId: vehicleId, odometer: odometer, distSinceCodesCleared: distSinceCleared, rpm: rpm,
-                captureMode: captureMode)
-
-            setCurrentMileage(odometer, for: vehicleId)
-            lastSyncDate = Date()
-            if promptManualEntry {
-                requestManualEntry(for: vehicleId)
-            } else if manualEntryVehicleId == vehicleId {
-                needsManualEntry = false
-                manualEntryVehicleId = nil
-            }
-            clearSkipThrottle()
-            let timeStr = Date().formatted(date: .omitted, time: .standard)
-            obdStatus = "Captured \(Int(odometer)) mi at \(timeStr)"
-            lastCaptureInfo = "\(vehicle.displayName): \(Int(odometer)) mi at \(timeStr)"
-
-            // Send silent notification so user knows data was captured
-            await sendCaptureNotification(odometer: odometer, vehicle: vehicle)
-
-            await checkStatusNotifications(vehicle: vehicle)
-            await ServiceReminderScheduler.reschedule()
-            await SyncManager.shared.syncAll()
-            return outcome
 
         } catch {
             obdStatus = "Read failed"
@@ -378,8 +431,26 @@ class MileageService: ObservableObject {
         @unknown default: appState = "unknown"
         }
         let context = "mode=\(bleManager.captureMode);app_state=\(appState);trigger=\(bleManager.connectTriggerDescription)"
-        await logEvent(outcome.vehicleId, "capture_end", raw: context, value: outcome.odometer,
-                       success: outcome.isSuccess, error: outcome.name, duration: Self.ms(since: start))
+        let entry = OBDLogEntry(
+            id: UUID().uuidString, timestamp: Date(), vehicleId: outcome.vehicleId, eventType: "capture_end",
+            rawResponse: context, parsedValue: outcome.odometer, success: outcome.isSuccess,
+            errorMessage: outcome.name, durationMs: Self.ms(since: start))
+
+        // The one log row that is kept offline: queued with its own timestamp,
+        // written when the network is back.
+        if captureOffline || !NetworkMonitor.shared.isOnline {
+            SyncManager.shared.queueLog(entry)
+            return
+        }
+        do {
+            try await NeonRepository.shared.writeOBDEvent(entry)
+        } catch {
+            if NetworkMonitor.isOfflineError(error) {
+                SyncManager.shared.queueLog(entry)
+            } else {
+                Log.db("failed to log capture_end: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func requestManualEntry(for vehicleId: String) {
@@ -415,8 +486,12 @@ class MileageService: ObservableObject {
             return .failed(reason: reason, raw: raw)
 
         case .vin(let vin, let raw):
+            if captureOffline {
+                return resolveFromCache(vin: vin, raw: raw)
+            }
             do {
                 if let known = try await NeonRepository.shared.getVehicle(byVIN: vin) {
+                    VehicleCache.upsert(known)
                     await logAttempts(attempts, event: "vin_read", pid: "0902", vehicleId: known.id,
                                       value: nil, success: true, message: nil)
                     guard known.isActive else { return .retired(known) }
@@ -429,11 +504,30 @@ class MileageService: ObservableObject {
                 cachedVehicle = (created, Date())
                 return .vehicle(created)
             } catch {
+                if NetworkMonitor.isOfflineError(error) {
+                    return resolveFromCache(vin: vin, raw: raw)
+                }
                 await logAttempts(attempts, event: "vin_read", pid: "0902", vehicleId: nil,
                                   value: nil, success: false, message: "lookup failed: \(error.localizedDescription)")
                 return .failed(reason: "vin_lookup_error", raw: raw)
             }
         }
+    }
+
+    /// No database: identify the car from the saved car list. A known, active
+    /// car is captured under its own id; a retired one is skipped as usual. An
+    /// unknown VIN is never turned into a car offline — its reading is kept as
+    /// an unassigned reading (the raw VIN reply travels with it).
+    private func resolveFromCache(vin: String, raw: String?) -> VehicleResolution {
+        captureOffline = true
+        guard let known = VehicleCache.vehicle(vin: vin) else {
+            Log.obd("offline: VIN not in the saved car list")
+            return .failed(reason: "vin_unknown_offline", raw: raw)
+        }
+        Log.obd("offline: identified \(known.displayName) from the saved car list")
+        guard known.isActive else { return .retired(known) }
+        cachedVehicle = (known, Date())
+        return .vehicle(known)
     }
 
     /// Unknown VIN: create the car (make/year decoded offline), give it a copy
@@ -469,14 +563,46 @@ class MileageService: ObservableObject {
             distSinceCodesCleared: dist,
             distRawResponse: distRaw
         )
-        do {
-            try await NeonRepository.shared.saveUnassignedReading(reading)
-        } catch {
+        if captureOffline {
             SyncManager.shared.queueUnassignedReading(reading)
+        } else {
+            do {
+                try await NeonRepository.shared.saveUnassignedReading(reading)
+            } catch {
+                if NetworkMonitor.isOfflineError(error) { captureOffline = true }
+                SyncManager.shared.queueUnassignedReading(reading)
+            }
         }
-        obdStatus = "Couldn't identify car — reading saved for review"
+        obdStatus = captureOffline ? Self.offlineStatus : "Couldn't identify car — reading saved for review"
         await logEvent(nil, "unassigned_saved", value: dist, success: false, error: reason)
         return true
+    }
+
+    /// The database can't be reached: keep the raw reading in the offline queue
+    /// under the car identified by VIN. Nothing is calculated or saved here.
+    private func queueOfflineCapture(vehicle: Vehicle, captureMode: String, rpm: Int?,
+                                     odometer: Double?, odometerRaw: String?,
+                                     dist: Double?, distRaw: String?, reason: String) -> CaptureOutcome {
+        clearSkipThrottle()
+        // A capture with neither a 0131 nor an odometer carries nothing to compute from.
+        guard dist != nil || (odometer ?? 0) > 0 else {
+            obdStatus = "Offline — no reading to save"
+            return .skipped("offline_no_reading", vehicle.id)
+        }
+        SyncManager.shared.queueCapture(PendingCapture(
+            id: UUID().uuidString,
+            vehicleId: vehicle.id,
+            timestamp: Date(),
+            captureMode: captureMode,
+            rpm: rpm,
+            odometer: odometer,
+            odometerRawResponse: odometerRaw,
+            distSinceCodesCleared: dist,
+            distRawResponse: distRaw,
+            reason: reason
+        ))
+        obdStatus = Self.offlineStatus
+        return .queued(reason, vehicle.id)
     }
 
     // MARK: - Mileage Calculation
@@ -485,39 +611,17 @@ class MileageService: ObservableObject {
     /// Returns (odometer, shouldPromptManualEntry)
     private func calculateMileage(vehicleId: String, currentDistSinceCleared: Double?) async throws -> (Double, Bool) {
         let manualRef = try await NeonRepository.shared.getLatestManualMileageRecord(vehicleId: vehicleId)
+        let latest = try await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId)
 
-        guard let ref = manualRef else {
-            obdStatus = "Enter odometer to start tracking"
-            let latest = try await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId)
-            return (latest?.odometerMiles ?? 0, true)
-        }
+        // The rules live in MileageMath so an offline replay uses exactly the same ones.
+        let estimate = MileageMath.estimate(manualRef: manualRef, latest: latest, currentDist: currentDistSinceCleared)
+        obdStatus = estimate.status
 
-        guard let currentDist = currentDistSinceCleared else {
-            // dist unavailable — never regress below last known mileage
-            let latest = try await NeonRepository.shared.getLatestMileageRecord(vehicleId: vehicleId)
-            let lastKnown = latest?.odometerMiles ?? 0
-            let best = max(ref.odometerMiles, lastKnown)
-            obdStatus = "Using last known: \(Int(best)) mi"
-            return (best, false)
-        }
-
-        guard let refDist = ref.distSinceCodesCleared else {
-            obdStatus = "Confirm odometer now to enable auto-tracking"
-            return (ref.odometerMiles, true)
-        }
-
-        let delta = currentDist - refDist
-
-        if delta < 0 {
-            obdStatus = "Codes cleared — enter new odometer"
+        if estimate.basis == .codesCleared, let currentDist = currentDistSinceCleared, let refDist = manualRef?.distSinceCodesCleared {
             await logEvent(vehicleId, "codes_cleared_detected", pid: "0131", value: currentDist, success: false,
                       error: "Negative delta: current=\(Int(currentDist)) ref=\(Int(refDist))")
-            return (ref.odometerMiles, true)
         }
-
-        let calculated = ref.odometerMiles + delta
-        obdStatus = "Calculated: \(Int(calculated)) mi"
-        return (calculated, false)
+        return (estimate.odometer, estimate.shouldPromptManualEntry)
     }
 
     // MARK: - Logging
@@ -553,6 +657,9 @@ class MileageService: ObservableObject {
 
     private func logEvent(_ vehicleId: String?, _ eventType: String, pid: String? = nil, raw: String? = nil,
                      value: Double? = nil, success: Bool, error: String? = nil, duration: Int? = nil) async {
+        // Once the capture is known to be offline these can't be written (and would
+        // only wait on timeouts); capture_end alone is queued, by logCaptureEnd.
+        guard !captureOffline else { return }
         await NeonRepository.shared.logOBDEvent(
             vehicleId: vehicleId, eventType: eventType, pid: pid, rawResponse: raw,
             parsedValue: value, success: success, errorMessage: error, durationMs: duration)

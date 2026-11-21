@@ -20,6 +20,9 @@ struct DashboardView: View {
                 ScrollViewReader { proxy in
                     List {
                         headerSection
+                        if syncManager.pendingCount > 0 {
+                            queueSection
+                        }
                         bleSection
                         if !attentionRows.isEmpty {
                             attentionSection
@@ -84,11 +87,6 @@ struct DashboardView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if syncManager.pendingCount > 0 {
-                        Label("\(syncManager.pendingCount) pending", systemImage: "arrow.clockwise")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
                 }
                 Text("\(Int(mileageService.currentMileage(for: vehicleStore.viewedVehicleId)).formatted()) mi")
                     .font(.system(size: 36, weight: .bold, design: .rounded))
@@ -105,6 +103,20 @@ struct DashboardView: View {
                 }
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    /// Readings and records saved on this phone, waiting for the database.
+    private var queueSection: some View {
+        Section {
+            NavigationLink {
+                QueuedRecordsView()
+            } label: {
+                let count = syncManager.pendingCount
+                Label("\(count) \(count == 1 ? "reading" : "readings") waiting to sync", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+            }
         }
     }
 

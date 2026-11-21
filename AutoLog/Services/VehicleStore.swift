@@ -22,6 +22,8 @@ final class VehicleStore: ObservableObject {
 
     private init() {
         selectedVehicleId = UserDefaults.standard.string(forKey: Self.selectedKey)
+        // Start from the last known list so a launch with no network still has cars to show.
+        vehicles = VehicleCache.load().sorted { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
     }
 
     var viewedVehicle: Vehicle? {
@@ -38,6 +40,7 @@ final class VehicleStore: ObservableObject {
     func reload() async {
         do {
             vehicles = try await NeonRepository.shared.getAllVehicles()
+            VehicleCache.save(vehicles)
             Log.db("loaded \(vehicles.count) vehicles")
         } catch {
             Log.db("failed to load vehicles: \(error.localizedDescription)")
