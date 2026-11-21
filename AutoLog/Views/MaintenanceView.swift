@@ -21,6 +21,12 @@ struct MaintenanceView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // Fixed header: car picker above the filter bar
+                CarSwitcherRow()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.systemGroupedBackground))
                 filterBar
                 ZStack {
                     List {
@@ -47,7 +53,13 @@ struct MaintenanceView: View {
             }
             .navigationTitle("Maintenance")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    // Opens Service intervals through the shared car-menu sheet
+                    Button { vehicleStore.carMenuSheet = .intervals } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.title3)
+                    }
+                    .disabled(vehicleStore.viewedVehicleId == nil)
                     Button { showAddSheet = true } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.title3)
@@ -78,7 +90,6 @@ struct MaintenanceView: View {
                         }
                 }
             }
-            .carSwitcher()
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await loadRecords() }
         }

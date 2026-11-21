@@ -127,6 +127,18 @@ struct ContentView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.25), value: toast)
+            .sheet(item: $vehicleStore.carMenuSheet) { which in
+                switch which {
+                case .vehicles:
+                    VehiclesView()
+                case .intervals:
+                    if let vehicleId = vehicleStore.viewedVehicleId {
+                        ServiceIntervalsView(vehicleId: vehicleId)
+                    }
+                case .unassigned:
+                    UnassignedReadingsView()
+                }
+            }
             .alert(
                 "\(retiredPrompt?.displayName ?? "This car") is retired",
                 isPresented: Binding(get: { retiredPrompt != nil }, set: { if !$0 { retiredPrompt = nil } }),

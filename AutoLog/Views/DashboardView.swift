@@ -14,6 +14,9 @@ struct DashboardView: View {
     @State private var errorMessage: String?
     /// The car the rows on screen belong to.
     @State private var loadedVehicleId: String?
+    /// Service type whose interval / history sheet is open (long-press on a tracked row).
+    @State private var intervalTarget: ServiceTypeTarget?
+    @State private var historyTarget: ServiceTypeTarget?
     @FocusState private var trackedSearchFocused: Bool
 
     var body: some View {
@@ -21,6 +24,10 @@ struct DashboardView: View {
             ZStack {
                 ScrollViewReader { proxy in
                     List {
+                        Section {
+                            CarSwitcherRow()
+                        }
+                        .carSwitcherListRow()
                         if vehicleStore.viewedVehicleId == nil {
                             Section { NoCarSelectedView() }
                         } else {
@@ -79,7 +86,16 @@ struct DashboardView: View {
                     toastView(msg)
                 }
             }
-            .carSwitcher()
+            .sheet(item: $intervalTarget) { target in
+                if let vehicleId = vehicleStore.viewedVehicleId {
+                    IntervalEditSheet(vehicleId: vehicleId, serviceType: target.serviceType)
+                }
+            }
+            .sheet(item: $historyTarget) { target in
+                if let vehicleId = vehicleStore.viewedVehicleId {
+                    ServiceHistorySheet(vehicleId: vehicleId, serviceType: target.serviceType)
+                }
+            }
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             // Reload when the car changes, or when intervals / an assigned reading changed its data
             .task(id: "\(vehicleStore.viewedVehicleId ?? "-")#\(vehicleStore.dataVersion)") { await loadDashboard() }
@@ -262,6 +278,18 @@ struct DashboardView: View {
             } else {
                 ForEach(filteredTrackedItems) { item in
                     TrackedItemRowView(item: item)
+                        .contextMenu {
+                            Button {
+                                intervalTarget = ServiceTypeTarget(serviceType: item.serviceType)
+                            } label: {
+                                Label("Edit interval", systemImage: "slider.horizontal.3")
+                            }
+                            Button {
+                                historyTarget = ServiceTypeTarget(serviceType: item.serviceType)
+                            } label: {
+                                Label("View history", systemImage: "clock.arrow.circlepath")
+                            }
+                        }
                 }
             }
         }

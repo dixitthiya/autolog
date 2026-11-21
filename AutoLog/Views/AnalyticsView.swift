@@ -67,7 +67,10 @@ struct AnalyticsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 24) {
-                    if vehicleStore.viewedVehicleId != nil {
+                    CarSwitcherRow()
+                    if vehicleStore.viewedVehicleId == nil {
+                        NoCarSelectedView()
+                    } else {
                         projectedServiceDates
                     }
                     if !allDailyMiles.isEmpty || !monthlyMiles.isEmpty {
@@ -87,13 +90,10 @@ struct AnalyticsView: View {
             }
             .navigationTitle("Analytics")
             .overlay {
-                if vehicleStore.viewedVehicleId == nil {
-                    NoCarSelectedView()
-                } else if isLoading {
+                if isLoading && vehicleStore.viewedVehicleId != nil {
                     ProgressView()
                 }
             }
-            .carSwitcher()
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             // Reload when the car changes, or when intervals / an assigned reading changed its data
             .task(id: "\(vehicleStore.viewedVehicleId ?? "-")#\(vehicleStore.dataVersion)") { await loadData() }

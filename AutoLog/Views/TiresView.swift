@@ -17,21 +17,22 @@ struct TiresView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                if vehicleStore.viewedVehicleId == nil {
-                    NoCarSelectedView()
-                } else {
-                    ScrollView {
-                        VStack(spacing: 16) {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        CarSwitcherRow()
+                        if vehicleStore.viewedVehicleId == nil {
+                            NoCarSelectedView()
+                        } else {
                             odometerHeader
                             cornerGrid
                             pastTiresSection
                             maintenanceHint
                             emptyHint
                         }
-                        .padding()
                     }
-                    .refreshable { await load() }
+                    .padding()
                 }
+                .refreshable { await load() }
 
                 if isLoading && tires.isEmpty {
                     ProgressView()
@@ -44,7 +45,6 @@ struct TiresView: View {
             .overlay(alignment: .bottom) {
                 if let msg = errorMessage { TireToast(message: msg) { errorMessage = nil } }
             }
-            .carSwitcher()
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             .task(id: vehicleStore.viewedVehicleId) { await load() }
         }

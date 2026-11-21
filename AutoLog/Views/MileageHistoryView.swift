@@ -14,6 +14,22 @@ struct MileageHistoryView: View {
         NavigationStack {
             ZStack {
                 List {
+                    Section {
+                        CarSwitcherRow()
+                    }
+                    .carSwitcherListRow()
+
+                    // Empty states are rows, so the car picker above stays visible
+                    if vehicleStore.viewedVehicleId == nil {
+                        NoCarSelectedView()
+                            .carSwitcherListRow()
+                    } else if records.isEmpty && !isLoading {
+                        ContentUnavailableView("No Mileage Records",
+                            systemImage: "speedometer",
+                            description: Text("Add your first mileage entry"))
+                            .carSwitcherListRow()
+                    }
+
                     ForEach(records) { record in
                         MileageRowView(record: record)
                             .contentShape(Rectangle())
@@ -21,15 +37,6 @@ struct MileageHistoryView: View {
                     }
                 }
                 .refreshable { await loadRecords() }
-                .overlay {
-                    if vehicleStore.viewedVehicleId == nil {
-                        NoCarSelectedView()
-                    } else if records.isEmpty && !isLoading {
-                        ContentUnavailableView("No Mileage Records",
-                            systemImage: "speedometer",
-                            description: Text("Add your first mileage entry"))
-                    }
-                }
 
                 if isLoading && records.isEmpty {
                     ProgressView()
@@ -56,7 +63,6 @@ struct MileageHistoryView: View {
                     toastMessage(msg)
                 }
             }
-            .carSwitcher()
             .onChange(of: vehicleStore.viewedVehicleId) { _, _ in clearCarData() }
             // Reload when the car changes, or when an assigned reading added a record
             .task(id: "\(vehicleStore.viewedVehicleId ?? "-")#\(vehicleStore.dataVersion)") { await loadRecords() }

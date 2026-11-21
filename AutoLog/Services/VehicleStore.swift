@@ -19,6 +19,9 @@ final class VehicleStore: ObservableObject {
         didSet { UserDefaults.standard.set(selectedVehicleId, forKey: Self.selectedKey) }
     }
     @Published var connectedVehicle: Vehicle?
+    /// The sheet opened from the car menu (or the Maintenance intervals button);
+    /// presented once by ContentView so all tabs share it.
+    @Published var carMenuSheet: CarMenuSheet?
     /// Readings whose car couldn't be identified, still waiting to be assigned.
     @Published private(set) var unassignedCount = 0
     /// Bumped when a screen outside a tab changes that tab's data (intervals,

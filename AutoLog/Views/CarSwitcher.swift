@@ -1,17 +1,46 @@
 import SwiftUI
 
-/// Sheets opened from the car menu.
+/// Sheets opened from the car menu (or, for intervals, from Maintenance). The
+/// current one lives in `VehicleStore.carMenuSheet` and is presented once, by
+/// `ContentView`, so every tab shares it.
 enum CarMenuSheet: String, Identifiable {
     case vehicles, intervals, unassigned
     var id: String { rawValue }
 }
 
-/// The car picker at the top-left of every tab. Picking a car changes what the
-/// screens show and where entries made in the UI go. It never affects captures,
-/// which always go to the car the adapter is plugged into.
+/// The row at the top of each tab's content: the car picker, and a "Retired"
+/// capsule beside it when the viewed car is retired. All tabs read and write
+/// the one shared `VehicleStore.viewedVehicleId`.
+struct CarSwitcherRow: View {
+    @ObservedObject private var vehicleStore = VehicleStore.shared
+
+    var body: some View {
+        HStack(spacing: 8) {
+            CarSwitcherMenu()
+            if let car = vehicleStore.viewedVehicle, !car.isActive {
+                RetiredPill()
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+extension View {
+    /// Make a `List` row look like a plain row at the top of the page: no
+    /// background or separator, inset like the large title.
+    func carSwitcherListRow() -> some View {
+        self
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+    }
+}
+
+/// The car picker. Picking a car changes what the screens show and where
+/// entries made in the UI go. It never affects captures, which always go to the
+/// car the adapter is plugged into.
 struct CarSwitcherMenu: View {
     @ObservedObject private var vehicleStore = VehicleStore.shared
-    @Binding var sheet: CarMenuSheet?
 
     var body: some View {
         Menu {
@@ -28,22 +57,15 @@ struct CarSwitcherMenu: View {
                 }
             }
             Section {
-                if let car = vehicleStore.viewedVehicle {
-                    Button {
-                        sheet = .intervals
-                    } label: {
-                        Label("Service intervals — \(car.displayName)", systemImage: "gauge.with.dots.needle.33percent")
-                    }
-                }
                 if vehicleStore.unassignedCount > 0 {
                     Button {
-                        sheet = .unassigned
+                        vehicleStore.carMenuSheet = .unassigned
                     } label: {
                         Label("Unassigned (\(vehicleStore.unassignedCount))", systemImage: "questionmark.circle")
                     }
                 }
                 Button {
-                    sheet = .vehicles
+                    vehicleStore.carMenuSheet = .vehicles
                 } label: {
                     Label("Manage vehicles", systemImage: "car.2")
                 }
@@ -76,49 +98,6 @@ struct CarSwitcherMenu: View {
                 Text(car.displayName)
             }
         }
-    }
-}
-
-/// Adds the car picker row (with the retired capsule) and the car-menu sheets to a tab.
-/// Apply to the content inside each tab's NavigationStack.
-struct CarSwitcherModifier: ViewModifier {
-    @ObservedObject private var vehicleStore = VehicleStore.shared
-    @State private var sheet: CarMenuSheet?
-
-    func body(content: Content) -> some View {
-        content
-            // One row directly under the navigation title: the car picker, and
-            // a "Retired" capsule beside it when the viewed car is retired.
-            .safeAreaInset(edge: .top, spacing: 0) {
-                HStack(spacing: 8) {
-                    CarSwitcherMenu(sheet: $sheet)
-                    if let car = vehicleStore.viewedVehicle, !car.isActive {
-                        RetiredPill()
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .background(.bar)
-            }
-            .sheet(item: $sheet) { which in
-                switch which {
-                case .vehicles:
-                    VehiclesView()
-                case .intervals:
-                    if let vehicleId = vehicleStore.viewedVehicleId {
-                        ServiceIntervalsView(vehicleId: vehicleId)
-                    }
-                case .unassigned:
-                    UnassignedReadingsView()
-                }
-            }
-    }
-}
-
-extension View {
-    func carSwitcher() -> some View {
-        modifier(CarSwitcherModifier())
     }
 }
 
