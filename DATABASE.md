@@ -36,7 +36,7 @@ Daily odometer records — one per car per day, auto-logged via BLE or entered m
 | timestamp | TIMESTAMPTZ | NOT NULL | When the reading was taken |
 | odometer_miles | DOUBLE PRECISION | NOT NULL | Odometer reading in miles |
 | source | TEXT | NOT NULL | `BLE_AUTO`, `MANUAL`, or `IMPORTED` |
-| dist_since_codes_cleared | DOUBLE PRECISION | YES | PID 0131 value at time of capture. For `MANUAL` rows, the baseline for later captures: stored only if the car's 0131 was read live within the last 10 minutes, otherwise NULL (the next capture then asks to confirm the odometer) |
+| dist_since_codes_cleared | DOUBLE PRECISION | YES | PID 0131 value at time of capture. For `MANUAL` rows, the baseline for later captures: stored only if the car's 0131 was read in the last 30 minutes and the person confirmed the car was not driven since (entry not backdated more than 5 minutes), otherwise NULL (the next capture then asks to confirm the odometer) |
 | synced_at | TIMESTAMPTZ | DEFAULT now() | When the record was synced to Neon |
 | created_at | TIMESTAMPTZ | DEFAULT now() | Row creation time |
 

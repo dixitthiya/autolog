@@ -14,7 +14,9 @@ struct EditMileageView: View {
     @State private var showDeleteConfirm = false
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @State private var hasOBDBaseline = false
+    /// When the car's last distance reading was taken; nil when none is usable.
+    @State private var baselineReadAt: Date?
+    @State private var keepBaseline = true
     @FocusState private var odometerFocused: Bool
 
     init(record: MileageRecord?, vehicleId: String?, onSave: @escaping () async -> Void) {
@@ -41,12 +43,23 @@ struct EditMileageView: View {
 
                 if !isEditing {
                     Section {
-                        if hasOBDBaseline {
-                            Label("Live reading from this car — auto-tracking continues from this entry", systemImage: "checkmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.green)
+                        if let readAt = baselineReadAt {
+                            Toggle("Car hasn't been driven since the reading at \(readAt.formatted(date: .omitted, time: .shortened))", isOn: $keepBaseline)
+                            if isBackdated {
+                                Label("The date is more than 5 minutes ago, so the entry is saved without a baseline. The next capture will ask you to confirm the odometer.", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            } else if keepBaseline {
+                                Label("Reading taken \(ageText(of: readAt)) — auto-tracking continues from this entry", systemImage: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            } else {
+                                Label("Saved without a baseline. The next capture will ask you to confirm the odometer.", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
                         } else {
-                            Label("No recent reading from this car (last 10 minutes). The entry is saved without a baseline, and the next capture will ask you to confirm the odometer.", systemImage: "exclamationmark.triangle.fill")
+                            Label("No recent reading from this car (last 30 minutes). The entry is saved without a baseline, and the next capture will ask you to confirm the odometer.", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.orange)
                         }
@@ -63,11 +76,11 @@ struct EditMileageView: View {
             }
             .task {
                 if !isEditing {
+                    if let vehicleId {
+                        baselineReadAt = MileageService.shared.captureBaseline(for: vehicleId)?.readAt
+                    }
                     try? await Task.sleep(nanoseconds: 300_000_000)
                     odometerFocused = true
-                    if let vehicleId {
-                        hasOBDBaseline = liveDistSinceCleared(vehicleId: vehicleId) != nil
-                    }
                 }
             }
             .navigationTitle(isEditing ? "Edit Mileage" : "Add Mileage")
@@ -131,12 +144,24 @@ struct EditMileageView: View {
         isSaving = false
     }
 
-    /// This car's 0131 baseline: only a value read from it in the last 10 minutes.
-    /// An older logged value is never used — the car may have been driven since,
-    /// which would make every later odometer too high. With no baseline the
-    /// entry is saved without one, and the next capture asks to confirm the odometer.
+    /// An entry dated more than 5 minutes ago doesn't match the reading's moment.
+    private var isBackdated: Bool {
+        date < Date().addingTimeInterval(-5 * 60)
+    }
+
+    private func ageText(of readAt: Date) -> String {
+        let minutes = max(0, Int(Date().timeIntervalSince(readAt) / 60))
+        return minutes == 0 ? "just now" : "\(minutes) min ago"
+    }
+
+    /// This car's 0131 baseline: the reading from its last capture (under 30 minutes
+    /// old), used only while the person confirms the car hasn't been driven since and
+    /// the entry isn't backdated — otherwise the car may have moved, which would make
+    /// every later odometer too high. With no baseline the entry is saved without
+    /// one, and the next capture asks to confirm the odometer.
     private func liveDistSinceCleared(vehicleId: String) -> Double? {
-        MileageService.shared.recentDistSinceCleared(for: vehicleId)
+        guard keepBaseline, !isBackdated else { return nil }
+        return MileageService.shared.captureBaseline(for: vehicleId)?.miles
     }
 
     private func delete() async {

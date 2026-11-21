@@ -10,8 +10,9 @@ class MileageService: ObservableObject {
     private static let legacyCachedMileageKey = "cachedCurrentMileage"
     private static func cachedMileageKey(_ vehicleId: String) -> String { "cachedCurrentMileage.\(vehicleId)" }
 
-    /// How long a 0131 value read this session counts as "live" for a manual-entry baseline.
-    private static let liveDistMaxAge: TimeInterval = 10 * 60
+    /// How long a 0131 value read this session can still serve as a manual-entry baseline
+    /// (the person confirms the car hasn't been driven since).
+    private static let liveDistMaxAge: TimeInterval = 30 * 60
     /// How long an identified car is reused across the 10s engine-off retries.
     private static let vinCacheMaxAge: TimeInterval = 60
 
@@ -75,12 +76,13 @@ class MileageService: ObservableObject {
         UserDefaults.standard.set(miles, forKey: Self.cachedMileageKey(vehicleId))
     }
 
-    /// 0131 read from this car within the last few minutes, if any — the
-    /// "live" baseline for a manual odometer entry.
-    func recentDistSinceCleared(for vehicleId: String) -> Double? {
+    /// The latest 0131 read from this car (kept in memory only; a newer read
+    /// replaces it) and when it was read — the candidate baseline for a manual
+    /// odometer entry. nil once it is 30 minutes old, or if none was read this session.
+    func captureBaseline(for vehicleId: String) -> (miles: Double, readAt: Date)? {
         guard let entry = liveDistSinceCleared[vehicleId],
               Date().timeIntervalSince(entry.at) < Self.liveDistMaxAge else { return nil }
-        return entry.miles
+        return (entry.miles, entry.at)
     }
 
     func clearSkipThrottle() {
